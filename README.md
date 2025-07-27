@@ -92,5 +92,3 @@ python todo_skill_agent.py
 ```bash
 python mcp_crew_agent.py "What is the latest stock price of NVIDIA (NVDA)?"
 ```
-
-脚本会将日志写入 `run.log`，同时在控制台输出每个步骤的详细信息。
