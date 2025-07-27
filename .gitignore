@@ -1,5 +1,7 @@
+__pycache__/
+*.pyc
+.tool_cache.json
 old_codes
 .idea
 .vscode
-**.pyc
 logs
