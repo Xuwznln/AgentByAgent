@@ -14,7 +14,7 @@ import asyncio
 import json
 import re
 import traceback
-import functools
+import openai
 from typing import Dict, Any, List, Optional
 from urllib import request, parse
 from datetime import datetime
@@ -56,6 +56,7 @@ logger = dynamic_logger.get_logger("dynamic-mcp-server")
 
 # 初始化FastMCP服务器
 mcp = FastMCP(SERVER_NAME, version=SERVER_VERSION)
+config = json.load(open("config.json", "r", encoding="utf-8"))
 
 # ================================
 # 工具变更管理器
@@ -382,6 +383,54 @@ def search_github(query: str, max_results: int = 10, sort_by: str = "stars") -> 
         logger.error(f"GitHub搜索失败: {e}")
         return [{"error": f"搜索失败: {str(e)}"}]
 
+
+@mcp.tool
+def advanced_web_search(query: str) -> str:
+    """
+    使用AI增强的网络搜索功能，提供更智能和准确的搜索结果
+    
+    Args:
+        query: 搜索查询，支持中英文，可以是问题或关键词
+    
+    Returns:
+        AI分析和整理后的搜索结果
+    
+    Examples:
+        advanced_web_search("Python异步编程最佳实践")
+        advanced_web_search("What is the latest news about AI development?")
+    """
+    try:
+        # Configure OpenAI client with configuration values
+        openai_config = config.get("openai", {})
+        api_key = openai_config.get("api_key", "")
+        base_url = openai_config.get("base_url", "https://api.openai.com/v1/")
+        model = openai_config.get("model", "gpt-4.1")
+        if not api_key:
+            return "❌ 配置错误: OpenAI API密钥未设置，请检查config.json文件"
+        client = openai.OpenAI(
+            api_key=api_key,
+            base_url=base_url
+        )
+        logger.info(f"Executing advanced web search for query: '{query}'")
+        # Execute search with AI enhancement
+        response_with_search = client.responses.create(
+            model=model,
+            tools=[{
+                "type": "web_search_preview",
+                "search_context_size": "medium",
+            }],
+            input=query,
+            temperature=0.1
+        )
+        search_result = response_with_search.output_text
+        logger.info(f"Advanced web search completed successfully, result length: {len(search_result)} characters")
+        # Return formatted result
+        return search_result
+        
+    except Exception as e:
+        error_msg = f"高级网络搜索失败: {str(e)}"
+        logger.error(error_msg)
+        return f"❌ 搜索错误: {error_msg}"
 
 @mcp.tool
 def get_tools_changes() -> Dict[str, Any]:
