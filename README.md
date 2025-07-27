@@ -47,7 +47,8 @@ python agent.py "What is the latest stock price of NVIDIA (NVDA)?"
 
 ### 使用 CrewAI 控制多角色 Agent
 
-仓库还提供了一个 `crew_agent.py` 脚本，演示如何通过 [CrewAI](https://crewai.com) 协调不同角色的 Agent 共同完成代码编写。运行前请设置 OpenRouter 的 API Key：
+仓库还提供了一个 `crew_agent.py` 脚本，演示如何通过 [CrewAI](https://crewai.com) 协调不同角色的 Agent 共同完成代码编写。
+运行前可以在 `config.json` 中填入 API key 和 BASE_URL，或直接设置环境变量：
 
 ```bash
 export API_KEY="<your-openrouter-key>"
@@ -73,3 +74,23 @@ python auto_tool_creator.py "What is the latest stock price of NVIDIA (NVDA)?"
 export API_KEY="<your-openrouter-key>"
 python todo_skill_agent.py
 ```
+
+### 与 MCP 服务器联动示例
+
+新脚本 `mcp_crew_agent.py` 展示了如何连接 MCP 服务器，并在执行前后刷新工具列表。
+运行前请在仓库根目录创建 `config.json` 文件：
+
+```json
+{
+  "API_KEY": "<your-mcp-key>",
+  "BASE_URL": "https://your-mcp-server" 
+}
+```
+
+然后执行：
+
+```bash
+python mcp_crew_agent.py "What is the latest stock price of NVIDIA (NVDA)?"
+```
+
+脚本会将日志写入 `run.log`，同时在控制台输出每个步骤的详细信息。
