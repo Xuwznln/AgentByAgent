@@ -1,4 +1,6 @@
 __pycache__/
+venv/
+temp/
 *.pyc
 .tool_cache.json
 old_codes

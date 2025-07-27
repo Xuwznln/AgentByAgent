@@ -7,22 +7,24 @@ Dynamic MCP Server - 动态监控tools文件夹的MCP服务器
 - 动态导入和注册非_开头的函数作为工具
 - 检测工具变更并记录差异
 - 提供SSE接口在0.0.0.0:3001监听
+- 智能缓存：只在工具调用时重新加载当前被调用的工具（而非全局重载）
 """
 
-import sys
-import importlib
-import inspect
+import asyncio
 import json
-import logging
-from typing import Dict, Any, List, Callable
+import re
+import traceback
+import functools
+from typing import Dict, Any, List, Optional
+from urllib import request, parse
 from datetime import datetime
 from pathlib import Path
 import hashlib
 
-from fastmcp.tools import FunctionTool
+from fastmcp.server.proxy import FastMCPProxy, ProxyTool
 
 # 应用 JSON monkey patch 修复 pydantic 序列化问题
-from json_patch import apply_json_patch
+from tools.json_patch import apply_json_patch
 apply_json_patch()
 
 from fastmcp import FastMCP
@@ -30,6 +32,14 @@ from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.server.middleware.timing import DetailedTimingMiddleware
 from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
+from fastmcp.tools import FunctionTool
+
+# 导入新的环境管理和代理模块
+from tools.tool_env_manager import ToolEnvironmentManager
+from tools.tool_proxy import ToolProxyManager, ToolProxy
+
+# 导入增强的日志系统
+from tools.logger_config import dynamic_logger, console
 
 # ================================
 # 配置
@@ -41,12 +51,8 @@ SERVER_HOST = "0.0.0.0"
 SERVER_PORT = 3001
 TOOLS_DIR = "tools"
 
-# 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger("dynamic-mcp-server")
+# 配置增强日志系统
+logger = dynamic_logger.get_logger("dynamic-mcp-server")
 
 # 初始化FastMCP服务器
 mcp = FastMCP(SERVER_NAME, version=SERVER_VERSION)
@@ -79,14 +85,13 @@ class ToolChangeManager:
         
         # 检测变更
         changes = self.detect_changes()
-        if changes:
+        if changes and (len(changes["added"]) or len(changes["modified"]) or len(changes["removed"])):
             change_record = {
                 "timestamp": datetime.now().isoformat(),
                 "changes": changes
             }
             self.change_history.append(change_record)
-            logger.info(f"Detected tool changes: {json.dumps(changes, indent=2)}")
-        
+
         return changes
     
     def detect_changes(self) -> Dict[str, Any]:
@@ -170,90 +175,100 @@ change_manager = ToolChangeManager()
 # ================================
 
 class DynamicToolLoader:
-    """动态工具加载器"""
+    """动态工具加载器 - 支持独立环境"""
     
     def __init__(self, tools_dir: str):
         self.tools_dir = Path(tools_dir)
         self.loaded_modules: Dict[str, Any] = {}
         self.current_tools: Dict[str, Any] = {}
         
+        # 初始化环境管理器和代理管理器
+        self.env_manager = ToolEnvironmentManager(tools_dir)
+        self.proxy_manager = ToolProxyManager()
+        
         # 确保tools目录存在
         self.tools_dir.mkdir(exist_ok=True)
-        
-        # 将tools目录添加到sys.path
-        if str(self.tools_dir.absolute()) not in sys.path:
-            sys.path.insert(0, str(self.tools_dir.absolute()))
     
-    def scan_and_load_tools(self) -> Dict[str, Any]:
-        """扫描并加载tools目录中的工具"""
+    def scan_and_load_tools(self, request_tool_name: Optional[str] = None) -> Dict[str, Any]:
+        """扫描并加载tools目录中的工具（使用独立环境）"""
         new_tools = {}
+        # 使用环境管理器加载所有工具
+        load_result = self.env_manager.load_all_tools(request_tool_name.split(".")[0] if request_tool_name is not None else None)
         
-        # 扫描所有.py文件
-        for py_file in self.tools_dir.glob("*.py"):
-            if py_file.name.startswith("_") or py_file.name == "__init__.py":
-                continue
-            
-            module_name = py_file.stem
-            try:
-                # 重新加载模块以获取最新变更
-                if module_name in self.loaded_modules:
-                    importlib.reload(self.loaded_modules[module_name])
-                else:
-                    self.loaded_modules[module_name] = importlib.import_module(module_name)
+        if "tools" in load_result:
+            # load_result["tools"] 是字典格式 {tool_name: tool_data}
+            for tool_name, tool_data in load_result["tools"].items():
+                # 获取工具目录
+                tool_dir_name = tool_name.split(".")[0]
+                tool_dir = self.tools_dir / tool_dir_name
                 
-                module = self.loaded_modules[module_name]
-                
-                # 获取模块中的所有函数
-                for name, obj in inspect.getmembers(module, inspect.isfunction):
-                    # 跳过私有函数（_开头）
-                    if name.startswith("_"):
-                        continue
-                    
-                    # 确保函数是在当前模块中定义的
-                    if obj.__module__ == module_name:
-                        tool_key = f"{module_name}.{name}"
-                        new_tools[tool_key] = obj
-                        logger.debug(f"Loaded tool: {tool_key}")
-                
-            except Exception as e:
-                logger.error(f"Error loading module {module_name}: {e}")
-
+                if tool_dir.exists():
+                    try:
+                        # 获取Python可执行文件
+                        python_exe = self.env_manager.get_python_executable(tool_dir)
+                        
+                        # 创建工具代理
+                        proxy = self.proxy_manager.create_proxy(tool_data, tool_dir, python_exe)
+                        
+                        # 存储工具数据和代理
+                        new_tools[tool_name] = {
+                            "tool_data": tool_data,
+                            "proxy": proxy,
+                            "tool_dir": tool_dir,
+                            "python_exe": python_exe
+                        }
+                        
+                        logger.debug(f"Loaded tool via proxy: {tool_name}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error creating proxy for tool {tool_name}: {e}")
+        
+        # 记录加载错误
+        if "errors" in load_result and load_result["errors"]:
+            for error_info in load_result["errors"]:
+                logger.error(f"Tool loading error in {error_info['tool_dir']}: {error_info['error']}")
+        
+        logger.info(f"Loaded {len(new_tools)} tools via environment isolation")
         return new_tools
-    
-    def register_tools_to_mcp(self, tools: Dict[str, Callable]):
-        """将工具注册到MCP服务器"""
+
+    def register_tools_to_mcp(self, tools: Dict[str, Any], request_tool_name: Optional[str] = None) -> Dict[str, Any]:
+        """将工具注册到MCP服务器（使用FunctionTool数据和代理）"""
         existing_tools: Dict[str, FunctionTool] = mcp._tool_manager._tools  # type: ignore
         existing_tools_desc = {k: v.model_dump() for k, v in existing_tools.items() if "." in k}
         for v in existing_tools_desc.values():
             del v["fn"]
-        
-        # 注册新工具和修改后的工具，构建新工具描述
+        request_tool_dir = request_tool_name.split(".")[0] if request_tool_name is not None else self.tools_dir.name
+        # 注册新工具
         new_tools_desc = {}
-        for tool_name, tool_func in tools.items():
+        for tool_name, tool_info in tools.items():
             try:
-                # 创建工具的描述
-                doc = tool_func.__doc__ or f"Tool function {tool_name}"
+                tool_data = tool_info["tool_data"]
+                proxy: ToolProxy = tool_info["proxy"]
+                tool_data["fn"] = proxy.__call__
                 
-                # 使用装饰器方式注册工具
-                registered_tool = mcp.tool(
-                    name=tool_name,
-                    description=doc
-                )(tool_func)
-                
-                # 获取注册后的工具描述
-                updated_tools: Dict[str, FunctionTool] = mcp._tool_manager._tools  # type: ignore
-                if tool_name in updated_tools:
-                    new_tools_desc[tool_name] = updated_tools[tool_name].model_dump()
-                    del new_tools_desc[tool_name]["fn"]
-                
-                logger.info(f"Registered tool: {tool_name}")
+                # 重新构造FunctionTool对象
+                function_tool = FunctionTool.model_validate({k: v for k, v in tool_data.items() if k not in [
+                    "source_module", "function_name", "tool_name_prefix"
+                ]})
+                # 直接添加到MCP服务器
+                if tool_name in existing_tools:
+                    mcp.remove_tool(tool_name)
+                mcp.add_tool(function_tool)
+                # 记录工具描述（用于变更检测）
+                tool_desc = function_tool.model_dump()
+                del tool_desc["fn"]
+                new_tools_desc[tool_name] = tool_desc
+                logger.info(f"Registered proxied tool: {tool_name}")
                 
             except Exception as e:
-                logger.error(f"Error registering tool {tool_name}: {e}")
+                logger.error(f"Error registering tool {tool_name}: {e.args}\n{traceback.format_exc()}")
         
         # 移除不再存在的工具
         for tool_name in existing_tools_desc:
             if tool_name not in tools and "." in tool_name:
+                # 对于on tool call的情况，不要删除自定义tool
+                if request_tool_dir is not None and not tool_name.startswith(f"{request_tool_dir}."):
+                    continue
                 try:
                     mcp.remove_tool(tool_name)
                     logger.info(f"Removed tool: {tool_name}")
@@ -273,26 +288,29 @@ tool_loader = DynamicToolLoader(TOOLS_DIR)
 
 class DynamicToolMiddleware(Middleware):
     """动态工具中间件，在每次工具调用和列出工具时刷新tools"""
-    
+
     async def on_call_tool(self, context: MiddlewareContext, call_next):
-        """在工具调用时刷新tools目录"""
-        logger.warning(f"Refreshing tools before calling: {context.message.name}")
-        
-        # 重新扫描和加载工具
-        tools = tool_loader.scan_and_load_tools()
-        tool_loader.register_tools_to_mcp(tools)
+        """在工具调用时刷新当前工具"""
+        tool_name = context.message.name
+        if "." in tool_name:
+            logger.info(f"Refreshing specific tool before calling: {tool_name}")
+            # 只重新加载当前被调用的工具
+            reloaded_tools = tool_loader.scan_and_load_tools(tool_name)
+            if reloaded_tools:
+                # 重新注册该工具到MCP
+                register_result = tool_loader.register_tools_to_mcp(reloaded_tools, tool_name)
+            else:
+                logger.warning(f"No tools were reloaded for {tool_name}")
         
         # 继续执行工具调用
         return await call_next(context)
     
     async def on_list_tools(self, context: MiddlewareContext, call_next):
         """在列出工具时刷新tools目录"""
-        logger.warning("Refreshing tools before listing tools")
-        
+        logger.info("Refreshing all tools before listing tools")
         # 重新扫描和加载工具
         tools = tool_loader.scan_and_load_tools()
         tool_loader.register_tools_to_mcp(tools)
-        
         # 继续执行列出工具
         return await call_next(context)
 
@@ -308,6 +326,62 @@ mcp.add_middleware(StructuredLoggingMiddleware(include_payloads=True))
 # ================================
 # 内置工具
 # ================================
+
+@mcp.tool
+def search_github(query: str, max_results: int = 10, sort_by: str = "stars") -> List[Dict[str, Any]]:
+    """
+    搜索GitHub的Python语言仓库并按指定条件排序
+    
+    Args:
+        query: 搜索关键词
+        max_results: 返回结果数量限制
+        sort_by: 排序方式，可选: "stars", "forks", "updated"
+    
+    Returns:
+        按指定条件排序的仓库列表，包含star和fork数量
+    
+    Examples:
+        search_github("machine learning")  # 搜索Python机器学习项目
+    """
+    if not query:
+        raise Exception("query is empty")
+    
+    # 构建搜索查询字符串
+    search_query = query
+    search_query += f" language:Python"
+    
+    # GitHub搜索API支持排序参数
+    url = f"https://api.github.com/search/repositories?q={parse.quote(search_query)}&sort={sort_by}&order=desc"
+    logger.info(url)
+    try:
+        with request.urlopen(url) as resp:
+            data = json.load(resp)
+        
+        items = data.get("items", [])[:max_results]
+        
+        # 提取关键信息并格式化
+        results = []
+        for i, item in enumerate(items, 1):
+            repo_info = {
+                "rank": i,
+                "name": item["full_name"],
+                "url": item["html_url"],
+                "description": item.get("description", "无描述"),
+                "stars": item.get("stargazers_count", 0),
+                "forks": item.get("forks_count", 0),
+                "language": item.get("language", "未知"),
+                "updated_at": item.get("updated_at", ""),
+                "topics": item.get("topics", [])
+            }
+            results.append(repo_info)
+        
+        logger.info(f"GitHub搜索'{query}'返回{len(results)}个结果，按{sort_by}排序")
+        return results
+        
+    except Exception as e:
+        logger.error(f"GitHub搜索失败: {e}")
+        return [{"error": f"搜索失败: {str(e)}"}]
+
 
 @mcp.tool
 def get_tools_changes() -> Dict[str, Any]:
@@ -347,34 +421,6 @@ def refresh_tools() -> Dict[str, Any]:
         }
 
 @mcp.tool
-def list_tools_files() -> Dict[str, Any]:
-    """
-    列出tools目录中的所有Python文件
-    
-    Returns:
-        tools目录中文件的信息
-    """
-    tools_path = Path(TOOLS_DIR)
-    files_info = []
-    
-    if tools_path.exists():
-        for py_file in tools_path.glob("*.py"):
-            if not py_file.name.startswith("_"):
-                files_info.append({
-                    "filename": py_file.name,
-                    "path": str(py_file),
-                    "size": py_file.stat().st_size,
-                    "modified_time": datetime.fromtimestamp(py_file.stat().st_mtime).isoformat(),
-                    "hash": change_manager.get_file_hash(str(py_file))
-                })
-    
-    return {
-        "tools_directory": str(tools_path.absolute()),
-        "files": files_info,
-        "total_files": len(files_info)
-    }
-
-@mcp.tool
 def get_server_status() -> Dict[str, Any]:
     """
     获取服务器状态信息
@@ -391,8 +437,119 @@ def get_server_status() -> Dict[str, Any]:
         "uptime": "running",
         "loaded_modules": list(tool_loader.loaded_modules.keys()),
         "current_tools": list(tool_loader.current_tools.keys()),
-        "change_history_count": len(change_manager.change_history)
+        "change_history_count": len(change_manager.change_history),
+        "environment_mode": "isolated",
+        "proxy_tools_count": len(tool_loader.proxy_manager.list_proxies())
     }
+
+@mcp.tool
+def create_tool_environment(tool_name: str, requirements: Optional[List[str]] = None, template_content: Optional[str] = None) -> Dict[str, Any]:
+    """
+    创建新的工具环境，包括目录、虚拟环境、requirements.txt和基础tool.py文件
+    
+    Args:
+        tool_name: 工具名称（只能包含字母、数字、下划线）
+        requirements: 依赖包列表，例如 ["fastmcp", "requests>=2.25.0", "pandas"]
+        template_content: tool.py的模板内容，如果为空则使用默认模板
+        
+    Returns:
+        创建操作的结果和详细信息
+        
+    Examples:
+        create_tool_environment("my_calculator", ["fastmcp", "numpy"])
+        create_tool_environment("web_scraper", ["requests", "beautifulsoup4", "fastmcp"])
+    """
+    # 验证工具名称
+    if not tool_name or not re.match(r'^[a-zA-Z][a-zA-Z0-9_]*$', tool_name):
+        return {
+            "status": "error",
+            "message": "工具名称只能包含字母、数字、下划线，且必须以字母开头"
+        }
+    
+    try:
+        tool_dir = Path(TOOLS_DIR) / tool_name
+        
+        # 检查目录是否已存在
+        if tool_dir.exists():
+            return {
+                "status": "error",
+                "message": f"工具目录 {tool_name} 已存在"
+            }
+        
+        # 创建工具目录
+        tool_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 创建requirements.txt
+        requirements_content = []
+        if requirements:
+            # 验证并清理依赖格式
+            for req in requirements:
+                req = req.strip()
+                if req and not req.startswith("#"):
+                    requirements_content.append(req)
+        
+        # 默认添加fastmcp依赖
+        if "fastmcp" not in str(requirements_content):
+            requirements_content.insert(0, "fastmcp")
+        
+        requirements_file = tool_dir / "requirements.txt"
+        with open(requirements_file, 'w', encoding='utf-8') as f:
+            f.write("# Tool dependencies\n")
+            for req in requirements_content:
+                f.write(f"{req}\n")
+        
+        # 创建默认tool.py文件
+        if not template_content:
+            template_content = f'''"""
+{tool_name.title()} Tool - {tool_name}工具
+
+这是一个自动生成的工具模板。
+请编辑此文件来实现您的工具功能。
+"""
+
+# 在这里添加更多工具函数...
+'''
+        tool_file = tool_dir / "tool.py"
+        with open(tool_file, 'w', encoding='utf-8') as f:
+            f.write(template_content)
+        
+        # 使用环境管理器创建虚拟环境
+        try:
+            venv_path = tool_loader.env_manager.ensure_virtual_environment(tool_dir)
+            venv_created = True
+        except Exception as e:
+            logger.warning(f"虚拟环境创建失败: {e}")
+            venv_created = False
+        
+        # 尝试安装依赖
+        deps_installed = False
+        if venv_created:
+            try:
+                deps_installed = tool_loader.env_manager.install_requirements(tool_dir)
+            except Exception as e:
+                logger.warning(f"依赖安装失败: {e}")
+
+        # noinspection PyUnboundLocalVariable
+        return {
+            "status": "success",
+            "message": f"工具环境 {tool_name} 创建成功",
+            "details": {
+                "tool_name": tool_name,
+                "tool_directory": str(tool_dir.absolute()),
+                "requirements_file": str(requirements_file.absolute()),
+                "tool_file": str(tool_file.absolute()),
+                "virtual_environment": str(venv_path.absolute()) if venv_created else None,
+                "dependencies": requirements_content,
+                "venv_created": venv_created,
+                "dependencies_installed": deps_installed
+            }
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"创建工具环境失败: {str(e)}"
+        }
 
 # ================================
 # 资源
@@ -428,42 +585,55 @@ def get_server_config() -> dict:
 
 def main():
     """启动动态MCP服务器"""
-    
-    print("="*70)
-    print("Dynamic MCP Server - 动态工具服务器")
-    print("="*70)
-    print(f"服务器: {SERVER_NAME} v{SERVER_VERSION}")
-    print(f"监听地址: {SERVER_HOST}:{SERVER_PORT}")
-    print(f"传输协议: SSE")
-    print(f"工具目录: {Path(TOOLS_DIR).absolute()}")
-    print()
-    print("功能特性:")
-    print("  - 动态监控tools文件夹")
-    print("  - 自动加载非_开头的函数作为工具")
-    print("  - 实时检测工具变更")
-    print("  - 记录变更历史")
-    print("  - SSE实时通信")
-    print()
-    print("内置工具:")
-    print("  - get_tools_changes: 获取工具变更信息")
-    print("  - refresh_tools: 手动刷新工具")
-    print("  - list_tools_files: 列出工具文件")
-    print("  - get_server_status: 获取服务器状态")
-    print()
-    print("启动服务器...")
-    print("="*70)
-    
-    # 初始加载tools
+    dynamic_logger.print_banner(
+        "Dynamic MCP Server - 动态工具服务器",
+        f"v{SERVER_VERSION} | {SERVER_HOST}:{SERVER_PORT} | SSE协议"
+    )
+    console.print()
+    dynamic_logger.print_section("服务器配置", [
+        f"服务器名称: [bold cyan]{SERVER_NAME}[/bold cyan]",
+        f"版本: [bold green]{SERVER_VERSION}[/bold green]", 
+        f"监听地址: [bold yellow]{SERVER_HOST}:{SERVER_PORT}[/bold yellow]",
+        f"传输协议: [bold magenta]SSE[/bold magenta]",
+        f"工具目录: [bold blue]{Path(TOOLS_DIR).absolute()}[/bold blue]"
+    ], "cyan")
+    console.print()
+    # ================================
+    # 镜像远程MCP服务器工具
+    # ================================
     try:
-        tools = tool_loader.scan_and_load_tools()
-        tool_loader.register_tools_to_mcp(tools)
-        print(f"初始加载了 {len(tools)} 个工具")
+        proxy: FastMCPProxy = FastMCP.as_proxy("http://127.0.0.1:8931/sse/")
+        remote_tools = asyncio.run(proxy.get_tools())
+        tool_info: ProxyTool
+        for tool_name, tool_info in remote_tools.items(): # type: ignore
+            try:
+                # 创建本地副本
+                local_tool = tool_info.copy()
+                # 添加到本地服务器
+                mcp.add_tool(local_tool)
+                logger.info(f"Mirrored tool from remote server: {tool_info.name}")
+            except Exception as e:
+                logger.error(f"Failed to mirror tool {tool_info.name}: {e}")
     except Exception as e:
-        logger.error(f"初始工具加载失败: {e}")
+        dynamic_logger.warning(f"无法连接到远程MCP服务器: {e}")
+        dynamic_logger.info("将仅使用本地工具继续启动...")
+    # ================================
+    # 加载本地工具
+    # ================================
+    dynamic_logger.info("正在加载本地工具...")
+    tools = tool_loader.scan_and_load_tools()
+    tool_loader.register_tools_to_mcp(tools)
+    dynamic_logger.success(f"已加载 {len(tools)} 个本地工具")
+    
+    dynamic_logger.print_status("启动", "服务器正在启动...", True)
+    console.print()
+    # ================================
+    # 加载代码工具
+    # ================================
     from mcp_claude_code.server import ClaudeCodeServer
     ClaudeCodeServer(mcp_instance=mcp, allowed_paths=["/home/wz/AgentByAgent/tools"], enable_agent_tool=False)
     # 启动服务器
     mcp.run(transport="sse", host=SERVER_HOST, port=SERVER_PORT)
 
 if __name__ == "__main__":
-    main() 
+    main()  # 同步直接执行，异步交给mcp.run内部处理
