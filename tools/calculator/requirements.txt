@@ -1,3 +1,0 @@
-# Calculator tool dependencies
-# No external dependencies needed for basic math operations
-fastmcp

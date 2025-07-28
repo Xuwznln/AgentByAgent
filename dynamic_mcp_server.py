@@ -48,7 +48,7 @@ from tools.logger_config import dynamic_logger, console
 SERVER_NAME = "DynamicToolsServer"
 SERVER_VERSION = "1.0.0"
 SERVER_HOST = "0.0.0.0"
-SERVER_PORT = 3001
+SERVER_PORT = 3002
 TOOLS_DIR = "tools"
 
 # 配置增强日志系统
@@ -384,6 +384,7 @@ def search_github(query: str, max_results: int = 10, sort_by: str = "stars") -> 
         return [{"error": f"搜索失败: {str(e)}"}]
 
 
+# noinspection PyTypeChecker
 @mcp.tool
 def advanced_web_search(query: str) -> str:
     """
@@ -682,7 +683,7 @@ def main():
     from mcp_claude_code.server import ClaudeCodeServer
     ClaudeCodeServer(mcp_instance=mcp, allowed_paths=["/home/wz/AgentByAgent/tools"], enable_agent_tool=False)
     # 启动服务器
-    mcp.run(transport="sse", host=SERVER_HOST, port=SERVER_PORT)
+    mcp.run(transport="http", host=SERVER_HOST, port=SERVER_PORT)
 
 if __name__ == "__main__":
     main()  # 同步直接执行，异步交给mcp.run内部处理
