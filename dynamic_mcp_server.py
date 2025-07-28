@@ -293,6 +293,12 @@ class DynamicToolMiddleware(Middleware):
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         """Refresh current tool when calling tool"""
         tool_name = context.message.name
+        start_time = datetime.now()
+        
+        # Log tool execution start
+        logger.warning(f"🚀 START EXECUTING TOOL: {tool_name}")
+        logger.info(f"📝 Tool arguments: {getattr(context.message, 'arguments', {})}")
+        
         if "." in tool_name:
             logger.info(f"Refreshing specific tool before calling: {tool_name}")
             # Only reload the currently called tool
@@ -303,8 +309,39 @@ class DynamicToolMiddleware(Middleware):
             else:
                 logger.warning(f"No tools were reloaded for {tool_name}")
         
-        # Continue executing tool call
-        return await call_next(context)
+        # Execute tool and capture result/error
+        try:
+            result = await call_next(context)
+            end_time = datetime.now()
+            execution_time = (end_time - start_time).total_seconds()
+            
+            # Log successful execution
+            logger.info(f"✅ EXECUTION COMPLETED: {tool_name}")
+            logger.info(f"⏱️  Execution time: {execution_time:.3f} seconds")
+            logger.info(f"📊 Result type: {type(result).__name__}")
+            
+            # Log result summary (truncated if too long)
+            if hasattr(result, 'content') and result.content:
+                content_str = str(result.content)
+                if len(content_str) > 200:
+                    logger.info(f"📋 Result preview: {content_str[:200]}...")
+                else:
+                    logger.info(f"📋 Result: {content_str}")
+            
+            return result
+            
+        except Exception as e:
+            end_time = datetime.now()
+            execution_time = (end_time - start_time).total_seconds()
+            
+            # Log execution error
+            logger.error(f"❌ EXECUTION FAILED: {tool_name}")
+            logger.error(f"⏱️  Failed after: {execution_time:.3f} seconds")
+            logger.error(f"💥 Error: {str(e)}")
+            logger.error(f"📍 Error type: {type(e).__name__}")
+            
+            # Re-raise the exception to maintain normal error handling
+            raise
     
     async def on_list_tools(self, context: MiddlewareContext, call_next):
         """Refresh tools directory when listing tools"""
