@@ -55,7 +55,7 @@ import os
 import json
 import logging
 import subprocess
-import venv
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Any, Optional
@@ -154,8 +154,9 @@ class ToolEnvironmentManager:
         if not venv_path.exists():
             logger.info(f"Creating virtual environment for {tool_dir.name}")
             try:
-                # 创建虚拟环境
-                venv.create(venv_path, with_pip=True)
+                subprocess.run([
+                    sys.executable, "-m", "virtualenv", os.path.abspath(venv_path)
+                ], capture_output=True, text=True, check=True, env=os.environ)
                 logger.info(f"Virtual environment created at {venv_path}")
             except Exception as e:
                 logger.error(f"Failed to create virtual environment for {tool_dir.name}: {e}")
@@ -178,13 +179,18 @@ class ToolEnvironmentManager:
         
         return python_exe
     
-    def install_requirements(self, tool_dir: Path) -> bool:
-        """安装工具的依赖包"""
+    def install_requirements(self, tool_dir: Path) -> Dict[str, Any]:
+        """安装工具的依赖包，返回详细结果"""
         requirements_file = tool_dir / "requirements.txt"
         
         if not requirements_file.exists():
             logger.info(f"No requirements.txt found for {tool_dir.name}")
-            return True
+            return {
+                "success": True,
+                "message": "No requirements.txt found",
+                "output": [],
+                "error_output": []
+            }
         
         try:
             python_exe = self.get_python_executable(tool_dir)
@@ -198,8 +204,9 @@ class ToolEnvironmentManager:
                 "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"
             ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             
-            # 实时打印输出
+            # 实时打印输出并收集日志
             output_lines = []
+            error_lines = []
             if process.stdout:
                 while True:
                     line = process.stdout.readline()
@@ -207,24 +214,49 @@ class ToolEnvironmentManager:
                         break
                     if line:
                         print(f"[{tool_dir.name}] {line.rstrip()}")
-                        output_lines.append(line)
+                        output_lines.append(line.rstrip())
+                        # 检测错误行
+                        if "ERROR:" in line or "FAILED:" in line or "Could not find" in line:
+                            error_lines.append(line.rstrip())
             
             # 等待进程结束
             return_code = process.wait()
             
             if return_code != 0:
                 logger.error(f"Failed to install requirements for {tool_dir.name}, return code: {return_code}")
-                return False
+                return {
+                    "success": False,
+                    "message": f"Installation failed with return code {return_code}",
+                    "output": output_lines,
+                    "error_output": error_lines,
+                    "return_code": return_code
+                }
             
             logger.info(f"Requirements installed for {tool_dir.name}")
-            return True
+            return {
+                "success": True,
+                "message": "Requirements installed successfully",
+                "output": output_lines,
+                "error_output": error_lines,
+                "return_code": return_code
+            }
             
         except subprocess.TimeoutExpired:
             logger.error(f"Timeout installing requirements for {tool_dir.name}")
-            return False
+            return {
+                "success": False,
+                "message": "Installation timeout",
+                "output": [],
+                "error_output": ["Installation process timed out"]
+            }
         except Exception as e:
             logger.error(f"Error installing requirements for {tool_dir.name}: {e}")
-            return False
+            return {
+                "success": False,
+                "message": f"Installation error: {str(e)}",
+                "output": [],
+                "error_output": [str(e)]
+            }
     
     def load_tools_from_environment(self, tool_dir: Path) -> Dict[str, Any]:
         """在独立环境中加载工具"""
@@ -235,8 +267,12 @@ class ToolEnvironmentManager:
         try:
             # 确保虚拟环境存在并安装依赖
             self.ensure_virtual_environment(tool_dir)
-            if not self.install_requirements(tool_dir):
-                return {"error": f"Failed to install requirements for {tool_dir.name}"}
+            install_result = self.install_requirements(tool_dir)
+            if not install_result["success"]:
+                return {
+                    "error": f"Failed to install requirements for {tool_dir.name}",
+                    "install_details": install_result
+                }
             
             # 获取Python可执行文件
             python_exe = self.get_python_executable(tool_dir)
@@ -354,7 +390,10 @@ class ToolEnvironmentManager:
             "path": str(tool_dir.absolute()),
             "has_venv": (tool_dir / "venv").exists(),
             "has_requirements": (tool_dir / "requirements.txt").exists(),
-            "has_tool_py": (tool_dir / "tool.py").exists()
+            "has_tool_py": (tool_dir / "tool.py").exists(),
+            "venv_path": str((tool_dir / "venv").absolute()),
+            "requirements_path": str((tool_dir / "requirements.txt").absolute()),
+            "tool_entry_point": str((tool_dir / "tool.py").absolute())
         }
         
         if info["has_venv"]:
@@ -362,9 +401,83 @@ class ToolEnvironmentManager:
                 python_exe = self.get_python_executable(tool_dir)
                 info["python_executable"] = str(python_exe)
                 info["venv_valid"] = python_exe.exists()
+                
+                # 获取pip路径
+                venv_path = tool_dir / "venv"
+                if os.name == 'nt':
+                    pip_exe = venv_path / "Scripts" / "pip.exe"
+                    scripts_dir = venv_path / "Scripts"
+                else:
+                    pip_exe = venv_path / "bin" / "pip"
+                    scripts_dir = venv_path / "bin"
+                
+                info["pip_executable"] = str(pip_exe)
+                info["scripts_directory"] = str(scripts_dir)
+                info["pip_exists"] = pip_exe.exists()
+                
+                # 检查pip版本
+                if pip_exe.exists():
+                    try:
+                        result = subprocess.run([
+                            str(python_exe), "-m", "pip", "--version"
+                        ], capture_output=True, text=True, timeout=10)
+                        
+                        if result.returncode == 0:
+                            info["pip_version"] = result.stdout.strip()
+                        else:
+                            info["pip_version"] = f"Error: {result.stderr.strip()}"
+                    except Exception as e:
+                        info["pip_version"] = f"Error checking version: {str(e)}"
+                
+                # 检查已安装的包
+                try:
+                    result = subprocess.run([
+                        str(python_exe), "-m", "pip", "list", "--format=json"
+                    ], capture_output=True, text=True, timeout=30)
+                    
+                    if result.returncode == 0:
+                        import json
+                        packages = json.loads(result.stdout)
+                        info["installed_packages"] = packages
+                        info["packages_count"] = len(packages)
+                    else:
+                        info["installed_packages"] = []
+                        info["packages_count"] = 0
+                        info["packages_error"] = result.stderr.strip()
+                except Exception as e:
+                    info["installed_packages"] = []
+                    info["packages_count"] = 0
+                    info["packages_error"] = str(e)
+                
             except Exception as e:
                 info["venv_error"] = str(e)
                 info["venv_valid"] = False
+        
+        # 读取requirements.txt内容
+        if info["has_requirements"]:
+            try:
+                with open(tool_dir / "requirements.txt", 'r', encoding='utf-8') as f:
+                    requirements_content = f.read().strip()
+                    requirements_lines = [
+                        line.strip() for line in requirements_content.split('\n') 
+                        if line.strip() and not line.strip().startswith('#')
+                    ]
+                    info["requirements_content"] = requirements_content
+                    info["requirements_list"] = requirements_lines
+                    info["requirements_count"] = len(requirements_lines)
+            except Exception as e:
+                info["requirements_error"] = str(e)
+        
+        # 检查tool.py文件的大小和修改时间
+        if info["has_tool_py"]:
+            try:
+                tool_py_path = tool_dir / "tool.py"
+                stat = tool_py_path.stat()
+                info["tool_py_size"] = stat.st_size
+                info["tool_py_modified"] = time.ctime(stat.st_mtime)
+                info["tool_py_modified_timestamp"] = stat.st_mtime
+            except Exception as e:
+                info["tool_py_error"] = str(e)
         
         return info
     

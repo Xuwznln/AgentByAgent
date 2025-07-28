@@ -12,9 +12,16 @@ This Agent can:
 import asyncio
 import json
 import os
+import traceback
 from typing import Dict, Any, List
 
 import anthropic
+from anthropic import BetaMessageStream, BetaMessageStreamEvent, BetaTextEvent
+from anthropic.lib.streaming._beta_types import BetaThinkingEvent, BetaSignatureEvent
+from anthropic.types.beta import BetaRawMessageStartEvent, BetaRawMessageDeltaEvent, BetaRawContentBlockDeltaEvent, \
+    BetaRawMessageStopEvent, BetaRawContentBlockStartEvent, BetaRawContentBlockStopEvent, BetaThinkingDelta, \
+    BetaSignatureDelta, BetaTextDelta
+from anthropic.types.beta.beta_raw_message_delta_event import Delta
 from rich.console import Console
 from rich.panel import Panel
 
@@ -73,97 +80,22 @@ class GeneralAgent:
     
     def _build_system_prompt(self) -> str:
         """Build system prompt"""
-        return """You are an intelligent AI assistant with the following core capabilities:
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z")
+        return f"""
 
-## 🎯 Core Responsibilities
-Your mission is to understand and solve various problems posed by users by analyzing task requirements and using available tools multiple times to provide optimal solutions.
+You are an autonomous developer agent with access to a suite of tools. For each user request, you must:
 
-You need to build new tools:
-1.  **Understand task requirements**: Analyze tasks and determine if new capabilities/tools are needed to complete them.
-2.  **Search for solutions**: Search for relevant libraries or APIs in the open source world (like GitHub) to implement required functionality.
-3.  **Learn and integrate**: Read documentation or code examples, learn how to use found libraries/APIs, and dynamically generate code to call them, thus "creating" new tools.
-4.  **Execute tasks**: Use newly created tools to solve problems.
-
-## 🛠️ Tool Usage Principles
-- Carefully analyze user requirements and determine the capabilities needed to solve the problem
-- Reasonably select and use available tools to complete tasks
-- Analyze and verify tool execution results
-- Provide clear and accurate final answers
-
-## 🔄 Workflow
-1. **Requirement Understanding**: Carefully analyze user questions and understand real needs
-2. **Solution Planning**: Develop strategies and steps to solve problems
-3. **Tool Execution**: Reasonably use available tools to complete each step
-4. **Result Integration**: Integrate tool execution results into complete answers
-5. **Quality Verification**: Ensure accuracy and completeness of answers
-
-## 📝 Response Principles
-- Provide accurate and useful information
-- Maintain professional and objective attitude
-- Acknowledge uncertainty, do not fabricate information
-- Prioritize reliable information sources and methods
-
-Now please assist users in solving problems."""
-
-    async def process_message(self, user_message: str) -> str:
-        """Process user message (using streaming response)"""
-        try:
-            console.print(Panel(f"📝 User Message: {user_message}", style="blue"))
-            
-            # Build message history - use correct message format
-            messages = []
-            
-            # Add conversation history
-            for msg in self.conversation_history:
-                messages.append({
-                    "role": msg["role"],
-                    "content": msg["content"]
-                })
-            
-            # Add current user message
-            messages.append({
-                "role": "user",
-                "content": user_message
-            })
-            
-            # Ensure client is initialized
-            if not self.anthropic_client:
-                raise ValueError("Anthropic client not initialized")
-            
-            # Use streaming API call
-            console.print("[yellow]🤖 AI thinking...[/yellow]")
-            result = ""
-            
-            # Create streaming response
-            with self.anthropic_client.messages.stream(
-                model=self.config.get("agent", {}).get("model"),
-                max_tokens=32000,
-                messages=messages,
-                system=self.system_prompt
-            ) as stream:
-                console.print("[green]📡 Starting to receive response...[/green]")
-                
-                for text in stream.text_stream:
-                    result += text
-                    # Display response content in real time
-                    console.print(text, end="")
-                
-                console.print()  # New line
-            
-            # Save conversation history
-            self.conversation_history.append({"role": "user", "content": user_message})
-            self.conversation_history.append({"role": "assistant", "content": result})
-            
-            # Keep history length within reasonable range
-            if len(self.conversation_history) > 10:
-                self.conversation_history = self.conversation_history[-10:]
-            
-            return result
-            
-        except Exception as e:
-            error_msg = f"Failed to process message: {str(e)}"
-            console.print(f"[red]{error_msg}[/red]")
-            return error_msg
+1. Identify the goal and plan a sequence of tool calls—combining them as needed—to solve the problem end‑to‑end.  
+2. Persistently iterate: if the first attempt doesn’t work, retry with a different combination of tools until the problem is resolved.  
+3. Use `create_tool_environment` whenever you need to scaffold a new tool module or project environment; then write and test `tool.py` code in that environment.  
+4. To leverage existing solutions, first run `search_github` to look for Python libraries or code examples you can adopt directly.  
+5. Always refresh your tool list via the MCP server’s auto‑refresh mechanism before beginning new work, so you have the latest capabilities.  
+6. For any external data or factual lookups, call only well‑documented APIs—never scrape arbitrary web pages. Record and trace every API response (strict provenance). If a source proves unreliable or returns unexpected data, abort and reset your context before trying a different API.  
+7. Log each step of your reasoning and tool usage, so it’s clear why you chose that sequence and when you decide to pivot strategies.  
+8. Continue this process—environment setup, GitHub search, code generation, tool invocation, API validation—until you deliver a complete, working solution.  
+If you dont have relevant tools, you can create them using `create_tool_environment` and edit tool file.
+"""
 
     async def process_message_with_mcp(self, user_message: str) -> str:
         """Process user message (using MCP server)"""
@@ -179,7 +111,7 @@ Now please assist users in solving problems."""
                     "role": msg["role"],
                     "content": msg["content"]
                 })
-            
+            user_message = f"Help me solve this problem: {user_message}"
             # Add current user message
             messages.append({
                 "role": "user", 
@@ -190,14 +122,15 @@ Now please assist users in solving problems."""
             if not self.anthropic_client:
                 raise ValueError("Anthropic client not initialized")
             
-            console.print("[yellow]🤖 Processing with MCP server...[/yellow]")
+            console.print("[yellow]🤖 Processing ...[/yellow]")
             
             # Use MCP server streaming API
             result = ""
             with self.anthropic_client.beta.messages.stream(
                 model=self.config.get("agent", {}).get("model"),
-                max_tokens=32000,
+                max_tokens=64000,
                 messages=messages,
+                system=self.system_prompt,
                 mcp_servers=[
                     {
                         "type": "url", 
@@ -205,15 +138,55 @@ Now please assist users in solving problems."""
                         "name": "tools-server",
                     }
                 ],
+                thinking={
+                    "type": "enabled",
+                    "budget_tokens": 16000
+                },
                 extra_headers={
                     "anthropic-beta": "mcp-client-2025-04-04"
                 }
             ) as stream:
                 console.print("[green]📡 Starting to receive MCP response...[/green]")
-                
-                for text in stream.text_stream:
-                    result += text
-                    console.print(text, end="")
+                # 处理普通文本流
+                stream: BetaMessageStream
+                event: BetaMessageStreamEvent
+                is_thinking = False
+                for event in stream:
+                    if isinstance(event, (BetaThinkingEvent, BetaTextEvent, BetaRawMessageDeltaEvent, BetaRawContentBlockDeltaEvent)):
+                        if isinstance(event, BetaThinkingEvent):
+                            is_thinking = True
+                            text = event.thinking
+                            # Thinking过程用灰色显示
+                            console.print(f"[dim bright_black]{text}[/dim bright_black]", end="")
+                        elif isinstance(event, BetaTextEvent):
+                            if is_thinking:
+                                console.print()
+                                is_thinking = False
+                            text = event.text
+                            # 普通文本用默认颜色
+                            console.print(text, end="")
+                        else:
+                            delta = event.delta
+                            if isinstance(delta, BetaThinkingDelta):
+                                continue
+                                # text = delta.thinking
+                                # # Thinking过程用灰色显示
+                                # console.print(f"[dim bright_black]{text}[/dim bright_black]", end="")
+                            elif isinstance(delta, BetaTextDelta):
+                                continue
+                                # text = delta.text
+                                # # 普通文本用默认颜色
+                                # console.print(text, end="")
+                            elif isinstance(delta, (BetaSignatureDelta, Delta)):
+                                console.print()
+                                continue
+                            else:
+                                continue
+                        result += str(text)
+                    elif isinstance(event, (BetaRawMessageStartEvent, BetaRawMessageStopEvent, BetaRawContentBlockStartEvent, BetaRawContentBlockStopEvent, BetaSignatureEvent)):
+                        pass
+                    else:
+                        pass
                 
                 console.print()  # New line
             
@@ -228,6 +201,7 @@ Now please assist users in solving problems."""
             return result
             
         except Exception as e:
+            traceback.print_exc()
             error_msg = f"MCP message processing failed: {str(e)}"
             console.print(f"[red]{error_msg}[/red]")
             return error_msg
@@ -247,9 +221,7 @@ class TestScenarios:
     @staticmethod
     def get_youtube_scenario() -> str:
         """YouTube video analysis scenario"""
-        return """In the YouTube 360 VR video from March 2018 narrated by the voice actor of Lord of the Rings' Gollum, what number was mentioned by the narrator directly after dinosaurs were first shown in the video?
-
-Please help me find this answer."""
+        return """In the YouTube 360 VR video from March 2018 narrated by the voice actor of Lord of the Rings' Gollum, what number was mentioned by the narrator directly after dinosaurs were first shown in the video?"""
     
     @staticmethod
     def get_stock_scenario() -> str:
@@ -259,7 +231,7 @@ Please help me find this answer."""
     @staticmethod
     def get_tools_list_scenario() -> str:
         """MCP tools list scenario"""
-        return """Please list all available MCP tools you have now. And select two of them to use."""
+        return """Please list all available MCP tools you have now. And create another environment function as a calculator. And test it."""
 
 # ================================
 # Main Program
@@ -278,39 +250,60 @@ async def main():
         console.print("1. YouTube Video Analysis (MCP)")
         console.print("2. Stock Price Query (MCP)") 
         console.print("3. List Available MCP Tools (MCP)")
-        console.print("4. Exit")
+        console.print("4. Direct Chat (MCP)")
+        console.print("5. Exit")
         console.print("="*60)
         
-        while True:
-            choice = input("\nPlease select mode (1-4): ").strip()
+        # Initial mode selection
+        choice = input("\nPlease select mode (1-5): ").strip()
+        
+        if choice == "1":
+            message = TestScenarios.get_youtube_scenario()
+            console.print(f"\n[yellow]📺 YouTube Analysis Scenario (MCP)[/yellow]")
+            await agent.process_message_with_mcp(message)
             
-            if choice == "1":
-                message = TestScenarios.get_youtube_scenario()
-                console.print(f"\n[yellow]📺 YouTube Analysis Scenario (MCP)[/yellow]")
-                result = await agent.process_message_with_mcp(message)
-                
-            elif choice == "2":
-                message = TestScenarios.get_stock_scenario()
-                console.print(f"\n[yellow]📈 Stock Query Scenario (MCP)[/yellow]")
-                result = await agent.process_message_with_mcp(message)
-                
-            elif choice == "3":
-                message = TestScenarios.get_tools_list_scenario()
-                console.print(f"\n[yellow]🛠️ MCP Tools List Scenario (MCP)[/yellow]")
-                result = await agent.process_message_with_mcp(message)
-                
-            elif choice == "4":
-                console.print("[green]👋 Thank you for using![/green]")
-                break
-                
-            else:
-                console.print("[red]Invalid choice, please try again[/red]")
-                continue
+        elif choice == "2":
+            message = TestScenarios.get_stock_scenario()
+            console.print(f"\n[yellow]📈 Stock Query Scenario (MCP)[/yellow]")
+            await agent.process_message_with_mcp(message)
             
-            # Ask if continue
-            if choice in ["1", "2", "3"]:
-                if input("\nContinue testing other features? (y/n): ").strip().lower() != 'y':
+        elif choice == "3":
+            message = TestScenarios.get_tools_list_scenario()
+            console.print(f"\n[yellow]🛠️ MCP Tools List Scenario (MCP)[/yellow]")
+            await agent.process_message_with_mcp(message)
+            
+        elif choice == "4":
+            console.print(f"\n[yellow]💬 Direct Chat Mode (MCP)[/yellow]")
+            console.print("[cyan]You can start chatting directly. Type 'quit' to exit.[/cyan]")
+            
+        elif choice == "5":
+            console.print("[green]👋 Thank you for using![/green]")
+            return
+            
+        else:
+            console.print("[red]Invalid choice, starting direct chat mode[/red]")
+            console.print(f"\n[yellow]💬 Direct Chat Mode (MCP)[/yellow]")
+            console.print("[cyan]You can start chatting directly. Type 'quit' to exit.[/cyan]")
+        
+        # Continuous conversation loop
+        if choice in ["1", "2", "3", "4"] or choice not in ["5"]:
+            console.print("\n" + "="*60)
+            console.print("💬 Continuous Conversation Mode")
+            console.print("[cyan]Type your message to continue the conversation, or 'quit' to exit[/cyan]")
+            console.print("="*60)
+            
+            while True:
+                user_input = input("\n👤 You: ").strip()
+                
+                if user_input.lower() == 'quit':
+                    console.print("[green]👋 Thank you for using![/green]")
                     break
+                    
+                if user_input:
+                    console.print(f"\n[yellow]🤖 Processing your message...[/yellow]")
+                    await agent.process_message_with_mcp(user_input)
+                else:
+                    console.print("[yellow]Please enter a message or 'quit' to exit[/yellow]")
     
     except KeyboardInterrupt:
         console.print("\n[yellow]👋 Program interrupted by user[/yellow]")

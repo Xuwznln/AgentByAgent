@@ -23,7 +23,7 @@ class ToolProxy:
     def __init__(self, tool_data: Dict[str, Any], tool_dir: Path, python_executable: Path):
         self.tool_data = tool_data  # FunctionTool序列化数据
         self.tool_dir = tool_dir.resolve()  # 转换为绝对路径
-        self.python_executable = python_executable.resolve()  # 转换为绝对路径
+        self.python_executable = python_executable.absolute()  # 转换为绝对路径
         self.tool_name = tool_data["name"]
         
         # 从tool_data中获取function_name，如果没有则从name中提取
@@ -41,7 +41,7 @@ class ToolProxy:
         return script_path
     
     def __call__(self, *args, **kwargs) -> Any:
-        """代理函数调用"""
+        """代理函数调用 - 出错时抛出异常让MCP框架处理"""
         try:
             # 获取执行脚本的绝对路径
             script_path = self.get_execution_script_path()
@@ -55,55 +55,26 @@ class ToolProxy:
                 "args": list(args),
                 "kwargs": kwargs
             }
-            
-            # 序列化参数
             params_json = json.dumps(params, ensure_ascii=False)
-            
             logger.debug(f"Executing tool {self.tool_name} in directory {self.tool_dir}")
             logger.debug(f"Script: {script_path}, Params: {params}")
-            
             # 在工具目录中执行脚本（使用绝对路径执行脚本）
             result = subprocess.run([
-                str(self.python_executable), str(script_path), params_json
-            ], 
-            capture_output=True, 
-            text=True, 
-            timeout=60,
-            cwd=str(self.tool_dir),  # 设置工作目录为工具目录
-            env=dict(os.environ, PYTHONPATH=str(self.tool_dir))  # 添加工具目录到Python路径
+                    str(self.python_executable), str(script_path), params_json
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=str(self.tool_dir),  # 设置工作目录为工具目录
+                env=dict(os.environ, PYTHONPATH=str(self.tool_dir))  # 添加工具目录到Python路径
             )
-            
-            if result.returncode != 0:
-                error_msg = f"Tool execution failed: {result.stderr}"
-                logger.error(error_msg)
-                logger.error(f"Stdout: {result.stdout}")
-                raise RuntimeError(error_msg)
-            
-            # 解析结果
-            try:
-                output = json.loads(result.stdout)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON output: {e}")
-                logger.error(f"Raw stdout: {result.stdout}")
-                logger.error(f"Raw stderr: {result.stderr}")
-                raise RuntimeError(f"Failed to parse tool output: {e}")
-            
+            output = json.loads(result.stdout)
+            # 检查工具执行结果
             if output.get("success"):
                 return output["result"]
-            else:
-                error_msg = output.get("error", "Unknown error")
-                if "traceback" in output:
-                    logger.error(f"Tool traceback: {output['traceback']}")
-                raise RuntimeError(f"Tool execution error: {error_msg}")
-        
+            raise RuntimeError(f"Tool execution error: {output.get('error', '')}\n{output.get('traceback', '')}")
         except subprocess.TimeoutExpired:
-            error_msg = f"Tool {self.tool_name} execution timeout"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
-        except Exception as e:
-            error_msg = f"Tool proxy error: {str(e)}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg)
+            raise TimeoutError(f"Tool {self.tool_name} execution timeout (>60s)")
 
 class ToolProxyManager:
     """工具代理管理器"""

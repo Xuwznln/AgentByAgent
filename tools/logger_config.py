@@ -34,7 +34,7 @@ custom_theme = Theme({
 console = Console(
     theme=custom_theme, 
     force_terminal=True, 
-    width=None,
+    width=10000,
     soft_wrap=False
 )
 
@@ -131,23 +131,7 @@ class DynamicMCPLogger:
     def success(self, message: str, **kwargs):
         """成功日志"""
         logger.bind(name=self.logger_name).success(message, **kwargs)
-    
-    def print_banner(self, title: str, subtitle: str = ""):
-        """打印美观的横幅 - 自适应宽度"""
-        # 获取终端宽度，如果获取失败则使用默认值
-        try:
-            width = self.console.size.width
-            if width < 50:  # 最小宽度保护
-                width = 70
-        except:
-            width = 70
-            
-        self.console.print("=" * width, style="cyan bold")
-        self.console.print(f"{title:^{width}}", style="cyan bold")
-        if subtitle:
-            self.console.print(f"{subtitle:^{width}}", style="dim cyan")
-        self.console.print("=" * width, style="cyan bold")
-    
+
     def print_section(self, title: str, items: list, style: str = "green"):
         """打印分节信息"""
         self.console.print(f"\n{title}:", style=f"{style} bold")
