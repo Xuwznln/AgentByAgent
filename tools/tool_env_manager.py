@@ -51,15 +51,16 @@ Tool Environment Manager - 工具环境管理器
     "
 """
 
-import os
+import asyncio
 import json
 import logging
+import os
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Any, Optional
-import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -178,9 +179,8 @@ class ToolEnvironmentManager:
             raise FileNotFoundError(f"Python executable not found at {python_exe}")
         
         return python_exe
-    
-    def install_requirements(self, tool_dir: Path) -> Dict[str, Any]:
-        """安装工具的依赖包，返回详细结果"""
+    async def install_requirements(self, tool_dir: Path) -> Dict[str, Any]:
+        """异步安装工具的依赖包，返回详细结果"""
         requirements_file = tool_dir / "requirements.txt"
         
         if not requirements_file.exists():
@@ -198,29 +198,43 @@ class ToolEnvironmentManager:
             print(f"[DEBUG] Installing requirements for {tool_dir.name}...")
             print(f"[DEBUG] Command: {python_exe} -m pip install -r {requirements_file}")
             
-            # 使用实时输出的方式安装依赖
-            process = subprocess.Popen([
+            # 使用异步子进程安装依赖
+            process = await asyncio.create_subprocess_exec(
                 str(python_exe), "-m", "pip", "install", "-r", str(requirements_file), 
-                "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"
-            ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                "-i", "https://pypi.tuna.tsinghua.edu.cn/simple",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT
+            )
             
-            # 实时打印输出并收集日志
+            # 收集输出和错误
             output_lines = []
             error_lines = []
-            if process.stdout:
-                while True:
-                    line = process.stdout.readline()
-                    if not line and process.poll() is not None:
-                        break
-                    if line:
-                        print(f"[{tool_dir.name}] {line.rstrip()}")
-                        output_lines.append(line.rstrip())
-                        # 检测错误行
-                        if "ERROR:" in line or "FAILED:" in line or "Could not find" in line:
-                            error_lines.append(line.rstrip())
             
-            # 等待进程结束
-            return_code = process.wait()
+            # 异步读取进程输出
+            try:
+                stdout = process.stdout
+                if stdout is not None:
+                    while True:
+                        line = await stdout.readline()
+                        if not line:
+                            break
+                        
+                        decoded_line = line.decode().rstrip()
+                        if decoded_line:
+                            # 直接处理输出行
+                            print(f"[{tool_dir.name}] {decoded_line}")
+                            output_lines.append(decoded_line)
+                            
+                            # 检测错误行
+                            if "ERROR:" in decoded_line or "FAILED:" in decoded_line or "Could not find" in decoded_line:
+                                error_lines.append(decoded_line)
+                
+                # 等待进程结束
+                return_code = await process.wait()
+                
+            except Exception as read_error:
+                logger.error(f"Error reading process output: {read_error}")
+                return_code = -1
             
             if return_code != 0:
                 logger.error(f"Failed to install requirements for {tool_dir.name}, return code: {return_code}")
@@ -241,7 +255,7 @@ class ToolEnvironmentManager:
                 "return_code": return_code
             }
             
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             logger.error(f"Timeout installing requirements for {tool_dir.name}")
             return {
                 "success": False,
@@ -257,9 +271,8 @@ class ToolEnvironmentManager:
                 "output": [],
                 "error_output": [str(e)]
             }
-    
-    def load_tools_from_environment(self, tool_dir: Path) -> Dict[str, Any]:
-        """在独立环境中加载工具"""
+    async def load_tools_from_environment(self, tool_dir: Path) -> Dict[str, Any]:
+        """在独立环境中异步加载工具"""
         tool_file = tool_dir / "tool.py"
         if not tool_file.exists():
             return {"error": f"No tool.py found in {tool_dir}"}
@@ -267,7 +280,7 @@ class ToolEnvironmentManager:
         try:
             # 确保虚拟环境存在并安装依赖
             self.ensure_virtual_environment(tool_dir)
-            install_result = self.install_requirements(tool_dir)
+            install_result = await self.install_requirements(tool_dir)
             if not install_result["success"]:
                 return {
                     "error": f"Failed to install requirements for {tool_dir.name}",
@@ -288,44 +301,50 @@ class ToolEnvironmentManager:
             print(f"[DEBUG] Executing tool loading script for {tool_dir.name}...")
             print(f"[DEBUG] Command: {python_exe} {script_path} {tool_file} {tool_dir.name}")
             
-            # 在子进程中执行脚本
-            process = subprocess.Popen([
-                str(python_exe), str(script_path), str(tool_file), tool_dir.name
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            # 使用异步子进程执行脚本
+            process = await asyncio.create_subprocess_exec(
+                str(python_exe), str(script_path), str(tool_file), tool_dir.name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
             
             # 等待进程结束并收集输出
-            stdout, stderr = process.communicate(timeout=60)
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=60)
             
-            if stderr:
-                print(f"[{tool_dir.name}] STDERR: {stderr}")
+            # 解码输出
+            stdout_str = stdout.decode() if stdout else ""
+            stderr_str = stderr.decode() if stderr else ""
+            
+            if stderr_str:
+                print(f"[{tool_dir.name}] STDERR: {stderr_str}")
             
             if process.returncode != 0:
                 logger.error(f"Script execution failed with return code: {process.returncode}")
-                logger.error(f"Script stderr: {stderr}")
+                logger.error(f"Script stderr: {stderr_str}")
                 return {
-                    "error": f"Script execution failed: {stderr}",
-                    "stdout": stdout
+                    "error": f"Script execution failed: {stderr_str}",
+                    "stdout": stdout_str
                 }
             
             # 解析结果
             try:
-                print(f"[DEBUG] Raw stdout from {tool_dir.name}: {stdout[:200]}...")  # 打印前200字符
-                output = json.loads(stdout)
+                print(f"[DEBUG] Raw stdout from {tool_dir.name}: {stdout_str[:200]}...")  # 打印前200字符
+                output = json.loads(stdout_str)
                 return output
             except json.JSONDecodeError as e:
-                logger.error(f"JSON parse error: {e}, raw_output: {stdout}")
+                logger.error(f"JSON parse error: {e}, raw_output: {stdout_str}")
                 return {
                     "error": f"Failed to parse JSON output: {e}",
-                    "raw_output": stdout
+                    "raw_output": stdout_str
                 }
 
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             return {"error": f"Timeout loading tools from {tool_dir.name}"}
         except Exception as e:
             return {"error": f"Error loading tools from {tool_dir.name}: {str(e)}"}
     
-    def load_all_tools(self, request_tool_dir: Optional[str] = None) -> Dict[str, Any]:
-        """加载所有工具目录中的工具"""
+    async def load_all_tools(self, request_tool_dir: Optional[str] = None) -> Dict[str, Any]:
+        """异步加载所有工具目录中的工具"""
         all_tools = {}
         errors = []
         cache_hits = 0
@@ -353,7 +372,7 @@ class ToolEnvironmentManager:
             cache_misses += 1
             logger.info(f"Cache MISS: Loading tools from environment for {tool_dir.name}")
             
-            result = self.load_tools_from_environment(tool_dir)
+            result = await self.load_tools_from_environment(tool_dir)
             
             if "error" in result:
                 errors.append({

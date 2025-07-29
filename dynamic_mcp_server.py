@@ -2,6 +2,7 @@
 # 问题：1.多工具调用容易卡死，网络问题？httpx.RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read)
 # 问题：2.自动停止（新建文件55,56）
 # 问题：3.工具调用结果输出？
+# session_id会忘记，一般是怎么处理的
 """
 Dynamic MCP Server - Dynamic tools folder monitoring MCP server
 
@@ -194,17 +195,17 @@ class DynamicToolLoader:
         # Ensure tools directory exists
         self.tools_dir.mkdir(exist_ok=True)
     
-    def scan_and_load_tools(self, request_tool_name: Optional[str] = None) -> Dict[str, Any]:
+    async def scan_and_load_tools(self, request_tool_name: Optional[str] = None) -> Dict[str, Any]:
         """Scan and load tools from the tools directory (using isolated environments)"""
         new_tools = {}
         # Use environment manager to load all tools
-        load_result = self.env_manager.load_all_tools(request_tool_name.split(".")[0] if request_tool_name is not None else None)
+        load_result = await self.env_manager.load_all_tools(request_tool_name.split("-")[0] if request_tool_name is not None else None)
         
         if "tools" in load_result:
             # load_result["tools"] is dictionary format {tool_name: tool_data}
             for tool_name, tool_data in load_result["tools"].items():
                 # Get tool directory
-                tool_dir_name = tool_name.split(".")[0]
+                tool_dir_name = tool_name.split("-")[0]
                 tool_dir = self.tools_dir / tool_dir_name
                 
                 if tool_dir.exists():
@@ -239,10 +240,10 @@ class DynamicToolLoader:
     def register_tools_to_mcp(self, tools: Dict[str, Any], request_tool_name: Optional[str] = None) -> Dict[str, Any]:
         """Register tools to MCP server (using FunctionTool data and proxy)"""
         existing_tools: Dict[str, FunctionTool] = mcp._tool_manager._tools  # type: ignore
-        existing_tools_desc = {k: v.model_dump() for k, v in existing_tools.items() if "." in k}
+        existing_tools_desc = {k: v.model_dump() for k, v in existing_tools.items() if "-" in k}
         for v in existing_tools_desc.values():
             del v["fn"]
-        request_tool_dir = request_tool_name.split(".")[0] if request_tool_name is not None else self.tools_dir.name
+        request_tool_dir = request_tool_name.split("-")[0] if request_tool_name is not None else self.tools_dir.name
         # Register new tools
         new_tools_desc = {}
         for tool_name, tool_info in tools.items():
@@ -270,7 +271,7 @@ class DynamicToolLoader:
         
         # Remove tools that no longer exist
         for tool_name in existing_tools_desc:
-            if tool_name not in tools and "." in tool_name:
+            if tool_name not in tools and "-" in tool_name:
                 # For on tool call cases, don't remove custom tools
                 if request_tool_dir is not None and not tool_name.startswith(f"{request_tool_dir}."):
                     continue
@@ -306,10 +307,10 @@ class DynamicToolMiddleware(Middleware):
         tool_name = context.message.name
         start_time = datetime.now()
 
-        if "." in tool_name:
+        if "-" in tool_name:
             logger.info(f"Refreshing specific tool before calling: {tool_name}")
             # Only reload the currently called tool
-            reloaded_tools = tool_loader.scan_and_load_tools(tool_name)
+            reloaded_tools = await tool_loader.scan_and_load_tools(tool_name)
             if reloaded_tools:
                 # Re-register the tool to MCP
                 register_result = tool_loader.register_tools_to_mcp(reloaded_tools, tool_name)
@@ -345,7 +346,7 @@ class DynamicToolMiddleware(Middleware):
         """Refresh tools directory when listing tools"""
         logger.info("Refreshing all tools before listing tools")
         # Re-scan and load tools
-        tools = tool_loader.scan_and_load_tools()
+        tools = await tool_loader.scan_and_load_tools()
         tool_loader.register_tools_to_mcp(tools)
         # Continue executing list tools
         return await call_next(context)
@@ -420,7 +421,7 @@ def search_github(query: str, max_results: int = 10, sort_by: str = "stars") -> 
 
 
 # noinspection PyTypeChecker
-@mcp.tool
+# @mcp.tool
 def llm_web_search(query: str) -> str:
     """
     Use AI-enhanced web search functionality to provide smarter search results with citations. You need to combine with other tools to actively verify correctness
@@ -524,7 +525,7 @@ def get_tools_changes() -> Dict[str, Any]:
     return change_manager.get_change_summary()
 
 @mcp.tool
-def refresh_tools() -> Dict[str, Any]:
+async def refresh_tools() -> Dict[str, Any]:
     """
     Manually refresh tools in the tools directory
     
@@ -533,7 +534,7 @@ def refresh_tools() -> Dict[str, Any]:
     """
     try:
         # Re-scan and load tools
-        tools = tool_loader.scan_and_load_tools()
+        tools = await tool_loader.scan_and_load_tools()
         tool_loader.register_tools_to_mcp(tools)
         
         changes = change_manager.get_change_summary()
@@ -573,13 +574,13 @@ def get_server_status() -> Dict[str, Any]:
     }
 
 @mcp.tool
-def tool_environment_create(environment_name: str, requirements: Optional[List[str]] = None, tool_py_file_content: Optional[str] = None) -> Dict[str, Any]:
+async def tool_environment_create(environment_name: str, pip_requirements: Optional[List[str]] = None, tool_py_file_content: Optional[str] = None) -> Dict[str, Any]:
     """
     Create a new isolated tool environment with directory structure, virtual environment, dependencies, and tool implementation
     
     Args:
         environment_name: Environment name (alphanumeric and underscores only, must start with letter)
-        requirements: List of Python packages to install, e.g. ["requests>=2.25.0", "pandas>=1.3.0"]
+        pip_requirements: List of Python packages to install, e.g. ["requests>=2.25.0", "pandas>=1.3.0"]
         tool_py_file_content: Custom Python code for tool.py. If not provided, creates a basic template.
                              Functions not starting with "_" will be automatically exported as MCP tools.
                              Example:
@@ -624,9 +625,9 @@ def tool_environment_create(environment_name: str, requirements: Optional[List[s
         
         # Prepare requirements list
         requirements_content = []
-        if requirements:
+        if pip_requirements:
             # Validate and clean dependency format
-            for req in requirements:
+            for req in pip_requirements:
                 req = req.strip()
                 if req and not req.startswith("#"):
                     requirements_content.append(req)
@@ -678,7 +679,7 @@ def example_function():
         install_result = {"success": False, "message": "Skipped - no virtual environment", "output": [], "error_output": []}
         if venv_created:
             try:
-                install_result = tool_loader.env_manager.install_requirements(tool_dir)
+                install_result = await tool_loader.env_manager.install_requirements(tool_dir)
             except Exception as e:
                 logger.warning(f"Dependency installation failed: {e}")
                 install_result = {
@@ -881,7 +882,7 @@ def tool_environment_repair(environment_name: str, force_recreate: bool = False)
             }
         
         # 安装依赖
-        install_result = tool_loader.env_manager.install_requirements(tool_dir)
+        install_result = asyncio.run(tool_loader.env_manager.install_requirements(tool_dir))
         if install_result["success"]:
             repair_actions.append("Installed requirements successfully")
         else:
@@ -907,13 +908,13 @@ def tool_environment_repair(environment_name: str, force_recreate: bool = False)
         }
 
 @mcp.tool
-def tool_environment_update(environment_name: str, requirements: Optional[List[str]] = None, tool_py_file_content: Optional[str] = None, force_reinstall: bool = False) -> Dict[str, Any]:
+async def tool_environment_update(environment_name: str, pip_requirements: Optional[List[str]] = None, tool_py_file_content: Optional[str] = None, force_reinstall: bool = False) -> Dict[str, Any]:
     """
     Update an existing tool environment with new requirements or template content
     
     Args:
         environment_name: Existing environment name
-        requirements: New dependency package list to update, e.g. ["fastmcp", "requests>=2.25.0", "pandas"]
+        pip_requirements: New dependency package list to update, e.g. ["fastmcp", "requests>=2.25.0", "pandas"]
         tool_py_file_content: New template content for tool.py, if provided will overwrite existing content
         force_reinstall: Whether to force reinstall all packages
         
@@ -937,11 +938,11 @@ def tool_environment_update(environment_name: str, requirements: Optional[List[s
         install_result = {"success": True, "message": "No installation required", "output": [], "error_output": []}
         
         # Update requirements.txt if provided
-        if requirements is not None:
+        if pip_requirements is not None:
             requirements_content = []
             
             # Validate and clean dependency format
-            for req in requirements:
+            for req in pip_requirements:
                 req = req.strip()
                 if req and not req.startswith("#"):
                     requirements_content.append(req)
@@ -967,7 +968,7 @@ def tool_environment_update(environment_name: str, requirements: Optional[List[s
             update_actions.append("Updated tool.py with new template content")
         
         # Reinstall dependencies if requirements were updated or force_reinstall is True
-        if requirements is not None or force_reinstall:
+        if pip_requirements is not None or force_reinstall:
             try:
                 # Ensure virtual environment exists
                 venv_path = tool_loader.env_manager.ensure_virtual_environment(tool_dir)
@@ -1004,7 +1005,7 @@ def tool_environment_update(environment_name: str, requirements: Optional[List[s
                         logger.warning(f"Error during force reinstall for {environment_name}: {e}")
                 
                 # Install requirements
-                install_result = tool_loader.env_manager.install_requirements(tool_dir)
+                install_result = await tool_loader.env_manager.install_requirements(tool_dir)
                 if install_result["success"]:
                     update_actions.append("Successfully installed/updated requirements")
                 else:
@@ -1037,7 +1038,7 @@ def tool_environment_update(environment_name: str, requirements: Optional[List[s
         }
 
 @mcp.tool
-def tool_environment_current_functions(environment_name: Optional[str] = None) -> Dict[str, Any]:
+async def tool_environment_current_functions(environment_name: Optional[str] = None) -> Dict[str, Any]:
     """
     Get information about all currently loaded functions and tools
     
@@ -1053,7 +1054,7 @@ def tool_environment_current_functions(environment_name: Optional[str] = None) -
     """
     try:
         # Only reload the currently called tool
-        reloaded_tools = tool_loader.scan_and_load_tools(environment_name)
+        reloaded_tools = await tool_loader.scan_and_load_tools(environment_name)
         if reloaded_tools:
             register_result = tool_loader.register_tools_to_mcp(reloaded_tools, environment_name)
         # Get all tools from MCP server
@@ -1074,7 +1075,7 @@ def tool_environment_current_functions(environment_name: Optional[str] = None) -
             }
             
             # Categorize based on tool name pattern
-            if "." in tool_name:
+            if "-" in tool_name:
                 # Dynamic tool (has tool_dir.function_name format)
                 dynamic_tools[tool_name] = tool_info
             elif tool_name.startswith("tool_environment_") or tool_name in [
@@ -1090,7 +1091,7 @@ def tool_environment_current_functions(environment_name: Optional[str] = None) -
         # Get environment information for dynamic tools
         dynamic_tool_environments = {}
         if dynamic_tools:
-            tool_dirs = set(tool_name.split(".")[0] for tool_name in dynamic_tools.keys())
+            tool_dirs = set(tool_name.split("-")[0] for tool_name in dynamic_tools.keys())
             for tool_dir_name in tool_dirs:
                 tool_dir = Path(TOOLS_DIR) / tool_dir_name
                 if tool_dir.exists():
@@ -1153,7 +1154,7 @@ def get_server_config() -> dict:
 # Startup Function
 # ================================
 
-def main():
+async def main():
     """Start the dynamic MCP server"""
     dynamic_logger.print_section(
         "Dynamic MCP Server - Dynamic Tool Server",
@@ -1176,7 +1177,7 @@ def main():
     from fastmcp import Client
     connected_client = Client("http://127.0.0.1:8931/mcp/")
     proxy = FastMCP.as_proxy(connected_client)
-    remote_tools = asyncio.run(proxy.get_tools())
+    remote_tools = await proxy.get_tools()
     tool_info: ProxyTool
     for tool_name, tool_info in remote_tools.items(): # type: ignore
         if tool_name in ["browser_resize", "browser_install", "browser_take_screenshot"]:
@@ -1189,11 +1190,12 @@ def main():
             logger.info(f"Mirrored tool from remote server: {tool_info.name}")
         except Exception as e:
             logger.error(f"Failed to mirror tool {tool_info.name}: {e}")
+    await connected_client.close()
     # ================================
     # Load Local Tools
     # ================================
     dynamic_logger.info("Loading local tools...")
-    tools = tool_loader.scan_and_load_tools()
+    tools = await tool_loader.scan_and_load_tools()
     tool_loader.register_tools_to_mcp(tools)
     dynamic_logger.success(f"Loaded {len(tools)} local tools")
     
@@ -1208,8 +1210,10 @@ def main():
     mcp.remove_tool("notebook_read")
     mcp.remove_tool("notebook_edit")
     mcp.remove_tool("batch")
+    mcp.remove_tool("todo_write")
+    mcp.remove_tool("todo_read")
     # Start server
-    mcp.run(transport="http", host=SERVER_HOST, port=SERVER_PORT)
+    await mcp.run_async(transport="http", host=SERVER_HOST, port=SERVER_PORT)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

@@ -14,6 +14,7 @@ import json
 import os
 import traceback
 from typing import Dict, Any, List
+import uuid
 
 import anthropic
 from anthropic import BetaMessageStream, BetaMessageStreamEvent, BetaTextEvent
@@ -35,6 +36,8 @@ class GeneralAgent:
         self.config = self._load_config(config_path)
         self.anthropic_client = None
         self.conversation_history: List[Dict[str, str]] = []
+        self.session_id = str(uuid.uuid4())[:5]
+        self.answer_times = 0
         
         # Initialize Anthropic client
         self._initialize_client()
@@ -83,7 +86,7 @@ class GeneralAgent:
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z")
         with open("system_prompt.md", "r", encoding="utf-8") as f:
             system_prompt = f.read()
-        return system_prompt + f"**Current time**: {current_time}\n**User question**: {user_question}"
+        return system_prompt + f"**Current session id**:{self.session_id}\n**Current answer times**:{self.answer_times}\n**Current time**: {current_time}\n**User question**: {user_question}"
 
     async def process_message_with_mcp(self, user_message: str) -> str:
         """Process user message (using MCP server)"""
@@ -134,6 +137,7 @@ class GeneralAgent:
                     "anthropic-beta": "mcp-client-2025-04-04"
                 }
             ) as stream:
+                self.answer_times += 1
                 console.print("[green]📡 Starting to receive MCP response...[/green]")
                 # 处理普通文本流
                 stream: BetaMessageStream
@@ -172,7 +176,7 @@ class GeneralAgent:
                                 continue
                         result += str(text)
                     elif isinstance(event, (BetaRawMessageStartEvent, BetaRawMessageStopEvent, BetaRawContentBlockStartEvent, BetaRawContentBlockStopEvent, BetaSignatureEvent)):
-                        if isinstance(event, (BetaSignatureEvent, BetaRawContentBlockStopEvent)):
+                        if isinstance(event, BetaRawContentBlockStopEvent):
                             console.print()
                         pass
                     else:
