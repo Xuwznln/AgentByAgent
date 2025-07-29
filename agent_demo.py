@@ -35,7 +35,6 @@ class GeneralAgent:
         self.config = self._load_config(config_path)
         self.anthropic_client = None
         self.conversation_history: List[Dict[str, str]] = []
-        self.system_prompt = self._build_system_prompt()
         
         # Initialize Anthropic client
         self._initialize_client()
@@ -78,24 +77,13 @@ class GeneralAgent:
             console.print(f"[red]❌ Failed to initialize Anthropic client: {e}[/red]")
             raise
     
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, user_question: str) -> str:
         """Build system prompt"""
         from datetime import datetime
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S %Z")
-        return f"""
-
-You are an autonomous developer agent with access to a suite of tools. For each user request, you must:
-
-1. Identify the goal and plan a sequence of tool calls—combining them as needed—to solve the problem end‑to‑end.  
-2. Persistently iterate: if the first attempt doesn’t work, retry with a different combination of tools until the problem is resolved.  
-3. Use `create_tool_environment` whenever you need to scaffold a new tool module or project environment; then write and test `tool.py` code in that environment.  
-4. To leverage existing solutions, first run `search_github` to look for Python libraries or code examples you can adopt directly.  
-5. Always refresh your tool list via the MCP server’s auto‑refresh mechanism before beginning new work, so you have the latest capabilities.  
-6. For any external data or factual lookups, call only well‑documented APIs—never scrape arbitrary web pages. Record and trace every API response (strict provenance). If a source proves unreliable or returns unexpected data, abort and reset your context before trying a different API.  
-7. Log each step of your reasoning and tool usage, so it’s clear why you chose that sequence and when you decide to pivot strategies.  
-8. Continue this process—environment setup, GitHub search, code generation, tool invocation, API validation—until you deliver a complete, working solution.  
-If you dont have relevant tools, you can create them using `create_tool_environment` and edit tool file.
-"""
+        with open("system_prompt.md", "r", encoding="utf-8") as f:
+            system_prompt = f.read()
+        return system_prompt + f"**Current time**: {current_time}\n**User question**: {user_question}"
 
     async def process_message_with_mcp(self, user_message: str) -> str:
         """Process user message (using MCP server)"""
@@ -130,7 +118,7 @@ If you dont have relevant tools, you can create them using `create_tool_environm
                 model=self.config.get("agent", {}).get("model"),
                 max_tokens=64000,
                 messages=messages,
-                system=self.system_prompt,
+                system=self._build_system_prompt(user_message),
                 mcp_servers=[
                     {
                         "type": "url", 
@@ -184,6 +172,8 @@ If you dont have relevant tools, you can create them using `create_tool_environm
                                 continue
                         result += str(text)
                     elif isinstance(event, (BetaRawMessageStartEvent, BetaRawMessageStopEvent, BetaRawContentBlockStartEvent, BetaRawContentBlockStopEvent, BetaSignatureEvent)):
+                        if isinstance(event, (BetaSignatureEvent, BetaRawContentBlockStopEvent)):
+                            console.print()
                         pass
                     else:
                         pass

@@ -25,13 +25,13 @@ from pathlib import Path
 import hashlib
 import subprocess
 
-from fastmcp.server.proxy import FastMCPProxy, ProxyTool
+from fastmcp.server.proxy import ProxyTool
 
 # Apply JSON monkey patch to fix pydantic serialization issues
 from tools.json_patch import apply_json_patch
 apply_json_patch()
 
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 from fastmcp.server.middleware import Middleware, MiddlewareContext
 from fastmcp.server.middleware.timing import DetailedTimingMiddleware
 from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
@@ -293,6 +293,13 @@ tool_loader = DynamicToolLoader(TOOLS_DIR)
 
 class DynamicToolMiddleware(Middleware):
     """Dynamic tool middleware that refreshes tools on every tool call and list tools"""
+    browser_mcp_client: Optional[Client] = None
+    async def init_client(self):
+        if self.browser_mcp_client is None:
+            logger.info("Initializing browser MCP client")
+            self.browser_mcp_client = Client('http://localhost:8931/mcp')
+            await self.browser_mcp_client._connect()
+
 
     async def on_call_tool(self, context: MiddlewareContext, call_next):
         """Refresh current tool when calling tool"""
@@ -311,7 +318,12 @@ class DynamicToolMiddleware(Middleware):
         
         # Execute tool
         logger.warning(f"🚀 Execute: {tool_name} Arguments: {getattr(context.message, 'arguments', {})}")
-        result = await call_next(context)
+        if tool_name.startswith("browser_"):
+            await self.init_client()
+            assert self.browser_mcp_client is not None
+            result = await self.browser_mcp_client.call_tool(tool_name, getattr(context.message, 'arguments', {}))
+        else:
+            result = await call_next(context)
         end_time = datetime.now()
         execution_time = (end_time - start_time).total_seconds()
         # Log successful execution
@@ -324,6 +336,8 @@ class DynamicToolMiddleware(Middleware):
                 logger.info(f"📋 Result {type(result).__name__}({len(result.content)}): {content_preview}")
             except (IndexError, AttributeError):
                 logger.info(f"📋 Result {type(result).__name__}({len(result.content)}): [content not accessible]")
+        else:
+            logger.info(f"📋 Result {type(result).__name__}: {vars(result)}")
         return result
 
     
@@ -406,7 +420,7 @@ def search_github(query: str, max_results: int = 10, sort_by: str = "stars") -> 
 
 
 # noinspection PyTypeChecker
-# @mcp.tool
+@mcp.tool
 def llm_web_search(query: str) -> str:
     """
     Use AI-enhanced web search functionality to provide smarter search results with citations. You need to combine with other tools to actively verify correctness
@@ -443,6 +457,7 @@ def llm_web_search(query: str) -> str:
             }],
             input=f"""You will receive a search request.
 **Do not add, infer, or guess any facts—use only the text in those snippets.**
+**Avoid any info sources from huggingface and other AI-related datasets.**
 
 Search query: {query}""",
             temperature=0
@@ -1156,24 +1171,24 @@ def main():
     # ================================
     # Mirror Remote MCP Server Tools
     # ================================
-    try:
-        proxy: FastMCPProxy = FastMCP.as_proxy("http://127.0.0.1:8931/sse/")
-        remote_tools = asyncio.run(proxy.get_tools())
-        tool_info: ProxyTool
-        for tool_name, tool_info in remote_tools.items(): # type: ignore
-            if tool_name in ["browser_resize", "browser_install", "browser_take_screenshot"]:
-                continue
-            try:
-                # Create local copy
-                local_tool = tool_info.copy()
-                # Add to local server
-                mcp.add_tool(local_tool)
-                logger.info(f"Mirrored tool from remote server: {tool_info.name}")
-            except Exception as e:
-                logger.error(f"Failed to mirror tool {tool_info.name}: {e}")
-    except Exception as e:
-        dynamic_logger.warning(f"Unable to connect to remote MCP server: {e}")
-        dynamic_logger.info("Continuing startup with local tools only...")
+    # proxy = FastMCP.as_proxy("http://127.0.0.1:8931/mcp/")
+    # This proxy will reuse the connected session for all requests
+    from fastmcp import Client
+    connected_client = Client("http://127.0.0.1:8931/mcp/")
+    proxy = FastMCP.as_proxy(connected_client)
+    remote_tools = asyncio.run(proxy.get_tools())
+    tool_info: ProxyTool
+    for tool_name, tool_info in remote_tools.items(): # type: ignore
+        if tool_name in ["browser_resize", "browser_install", "browser_take_screenshot"]:
+            continue
+        try:
+            # Create local copy
+            local_tool = tool_info.copy()
+            # Add to local server
+            mcp.add_tool(local_tool)
+            logger.info(f"Mirrored tool from remote server: {tool_info.name}")
+        except Exception as e:
+            logger.error(f"Failed to mirror tool {tool_info.name}: {e}")
     # ================================
     # Load Local Tools
     # ================================
@@ -1197,4 +1212,4 @@ def main():
     mcp.run(transport="http", host=SERVER_HOST, port=SERVER_PORT)
 
 if __name__ == "__main__":
-    main()  # Execute synchronously, async handling is done internally by mcp.run
+    main()
