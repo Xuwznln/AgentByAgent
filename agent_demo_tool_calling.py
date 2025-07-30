@@ -98,7 +98,6 @@ class ToolCallingAgent:
     async def async_init(self):
         """Async initialization for MCP client and tools"""
         await self.mcp_client._connect()
-        self.mcp_tools = await self.mcp_client.list_tools()
         await self._load_tools_from_mcp()
 
     def _load_config(self, config_path: str) -> Dict[str, Any]:
@@ -113,24 +112,22 @@ class ToolCallingAgent:
     async def _load_tools_from_mcp(self):
         """Load tool definitions from FastMCP client"""
         try:
-            # Convert MCP tool format to Claude tool format
+            self.mcp_tools = await self.mcp_client.list_tools()
             self.tools = []
             for tool in self.mcp_tools:
                 claude_tool = {
-                    "type": "function",
                     "name": tool.name,
                     "description": tool.description,
                     "input_schema": tool.inputSchema
                 }
                 self.tools.append(claude_tool)
-                console.print(f"  ✓ {tool.name}: {tool.description}")
             
             console.print(f"[green]✅ Successfully loaded {len(self.tools)} tools[/green]")
         except Exception as e:
             console.print(f"[red]❌ Failed to load tools from MCP: {e}[/red]")
             console.print("[yellow]⚠️ Continuing without tools...[/yellow]")
     
-    async def _execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> CallToolResult:
+    async def _execute_tool(self, tool_name: str, tool_input: Dict[str, Any]) -> str | list[Dict[str, Any]]:
         """Execute a tool via FastMCP client"""
         try:
             console.print(f"[yellow]🔧 Executing tool: {tool_name}[/yellow]")
@@ -145,17 +142,18 @@ class ToolCallingAgent:
             
             # 处理MCP工具
             result: CallToolResult = await self.mcp_client.call_tool(tool_name, tool_input)
-            if isinstance(result.data, dict):
-                result.data = json.dumps(result.data)
-            console.print(f"[green]✅ {tool_name} execution completed, result: {result.data[:100]}[/green]")
-            return result
+            result_content = []
+            for i in result.content:
+                result_content.append(i.model_dump(by_alias=True, mode="json", exclude_none=True))
+            console.print(f"[green]✅ {tool_name} execution completed, result: {str(result_content)[:100]}[/green]")
+            return result_content
         except Exception as e:
             traceback.print_exc()
             error_msg = f"Tool execution error: {str(e)}"
             console.print(f"[red]❌ {error_msg}[/red]")
-            return CallToolResult(content=[], is_error=True, data=f"{e}", structured_content=None)
+            return f"Tool execution error: {str(e)} \n {traceback.format_exc()}"
     
-    async def _execute_todo_write(self, tool_input: Dict[str, Any]) -> CallToolResult:
+    async def _execute_todo_write(self, tool_input: Dict[str, Any]) -> str:
         """执行todo_write工具"""
         try:
             content = tool_input.get("content", "")
@@ -168,13 +166,13 @@ class ToolCallingAgent:
             result_data = f"✅ 成功添加Todo项 #{todo['id']}: {content} (优先级: {priority})"
             
             console.print(f"[green]{result_data}[/green]")
-            return CallToolResult(content=[], is_error=False, data=result_data, structured_content=None)
+            return result_data
             
         except Exception as e:
             error_msg = f"todo_write错误: {str(e)}"
-            return CallToolResult(content=[], is_error=True, data=error_msg, structured_content=None)
+            return error_msg
     
-    async def _execute_todo_finish(self, tool_input: Dict[str, Any]) -> CallToolResult:
+    async def _execute_todo_finish(self, tool_input: Dict[str, Any]) -> str:
         """执行todo_finish工具"""
         try:
             todo_id = tool_input.get("id")
@@ -194,13 +192,13 @@ class ToolCallingAgent:
             result_data = f"✅ Todo项 #{todo['id']} 已完成: {todo['content']}"
             
             console.print(f"[green]{result_data}[/green]")
-            return CallToolResult(content=[], is_error=False, data=result_data, structured_content=None)
+            return result_data
             
         except Exception as e:
             error_msg = f"todo_finish错误: {str(e)}"
-            return CallToolResult(content=[], is_error=True, data=error_msg, structured_content=None)
+            return error_msg
     
-    async def _execute_todo_read(self, tool_input: Dict[str, Any]) -> CallToolResult:
+    async def _execute_todo_read(self, tool_input: Dict[str, Any]) -> str:
         """执行todo_read工具"""
         try:
             show_all = tool_input.get("show_all", False)
@@ -226,11 +224,11 @@ class ToolCallingAgent:
                 result_data = "\n".join(result_lines)
             
             console.print(f"[cyan]{result_data}[/cyan]")
-            return CallToolResult(content=[], is_error=False, data=result_data, structured_content=None)
+            return result_data
             
         except Exception as e:
             error_msg = f"todo_read错误: {str(e)}"
-            return CallToolResult(content=[], is_error=True, data=error_msg, structured_content=None)
+            return error_msg
     
     def _build_system_prompt(self, user_question: str) -> str:
         """Build system prompt"""
@@ -269,8 +267,8 @@ class ToolCallingAgent:
                         raise Exception("Anthropic client not initialized")
                     await self._load_tools_from_mcp()
                     # Create the request parameters
-                    create_params = {"model": self.config.get("agent", {}).get("model", "claude-3-sonnet-20240229"),
-                                     "max_tokens": 4096, "messages": current_messages,
+                    create_params = {"model": self.config.get("agent", {}).get("model"),
+                                     "max_tokens": 64000, "messages": current_messages,
                                      "system": self._build_system_prompt(user_message), "tools": self.tools.copy()}
                     
                     # 添加内置工具
@@ -282,7 +280,6 @@ class ToolCallingAgent:
                             "max_uses": 5
                         },
                         {
-                            "type": "function",
                             "name": "todo_write",
                             "description": "Add new todo item",
                             "input_schema": {
@@ -303,7 +300,6 @@ class ToolCallingAgent:
                             }
                         },
                         {
-                            "type": "function",
                             "name": "todo_finish",
                             "description": "Mark todo item as completed",
                             "input_schema": {
@@ -319,7 +315,6 @@ class ToolCallingAgent:
                             }
                         },
                         {
-                            "type": "function",
                             "name": "todo_read",
                             "description": "Read todo list",
                             "input_schema": {
@@ -386,14 +381,14 @@ class ToolCallingAgent:
                                         continue
                             elif isinstance(event, BetaRawContentBlockStartEvent):  # 段落开始
                                 if event.content_block.type == "tool_use":
-                                    console.print(f"[dim]-----{event.content_block.name} Start-----[/dim]", end="\n[dim]")
+                                    console.print(f"[dim]-----{event.content_block.name} Start-----[/dim]")
                             elif isinstance(event, BetaRawContentBlockStopEvent):
                                 if event.content_block.type == "text":
                                     # 一整段完成
                                     assistant_response_content.append(event.content_block)
                                 elif event.content_block.type == "tool_use":
                                     tool_calls.append(event.content_block)
-                                    console.print(f"[/dim]\n[dim]-----{event.content_block.name} End-----[/dim]")
+                                    console.print(f"\n[dim]-----{event.content_block.name} End-----[/dim]", end="")
                                     assistant_response_content.append(event.content_block)
                                 else:
                                     pass
@@ -423,17 +418,13 @@ class ToolCallingAgent:
                             tool_name = tool_call.name
                             tool_input = tool_call.input
                             tool_use_id = tool_call.id
-                            tool_result = await self._execute_tool(tool_name, tool_input)
+                            tool_result: str = await self._execute_tool(tool_name, tool_input)
                             # Format the tool result
-                            if tool_result.is_error:
-                                content = f"Error: {tool_result.data}"
-                            else:
-                                content = str(tool_result.data)
-                            
+
                             tool_results.append({
                                 "type": "tool_result",
                                 "tool_use_id": tool_use_id,
-                                "content": content
+                                "content": tool_result
                             })
                         
                         # Add tool results to messages
@@ -527,7 +518,7 @@ async def main():
         
         # Initial mode selection
         # choice = input("\nPlease select mode (1-6): ").strip()
-        choice = "3"  # for test
+        choice = "2"  # for test
 
         if choice == "1":
             message = TestScenarios.get_youtube_scenario()
@@ -553,22 +544,13 @@ async def main():
             console.print("\n" + "="*60)
             console.print("💬 Continuous Conversation Mode")
             console.print("[cyan]Type your message to continue the conversation, or 'quit' to exit[/cyan]")
-            console.print("[cyan]Type 'tools' to see available tools[/cyan]")
             console.print("="*60)
             
             while True:
                 user_input = input("\n👤 You: ").strip()
-                
                 if user_input.lower() == 'quit':
                     console.print("[green]👋 Thank you for using![/green]")
                     break
-
-                if user_input:
-                    console.print(f"\n[yellow]🤖 Processing your message...[/yellow]")
-                    await agent.process_message_with_tool_calling(user_input)
-                else:
-                    console.print("[yellow]Please enter a message, 'tools' to see available tools, or 'quit' to exit[/yellow]")
-    
     except KeyboardInterrupt:
         console.print("\n[yellow]👋 Program interrupted by user[/yellow]")
     except Exception as e:

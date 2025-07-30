@@ -44,7 +44,7 @@ def load_tools_from_module(module_path, tool_name_prefix=""):
             if obj.__module__ == "tool_module":
                 try:
                     # 构建工具名称
-                    tool_name = f"{tool_name_prefix}.{name}" if tool_name_prefix else name
+                    tool_name = f"{tool_name_prefix}-{name}" if tool_name_prefix else name
                     function_tool = Tool.from_function(
                         obj,
                         name=tool_name,
