@@ -38,6 +38,7 @@ from fastmcp.server.middleware.timing import DetailedTimingMiddleware
 from fastmcp.server.middleware.logging import StructuredLoggingMiddleware
 from fastmcp.server.middleware.error_handling import ErrorHandlingMiddleware
 from fastmcp.tools import FunctionTool
+from fastmcp.tools.tool import ToolResult
 
 # Import new environment management and proxy modules
 from tools.tool_env_manager import ToolEnvironmentManager
@@ -323,6 +324,7 @@ class DynamicToolMiddleware(Middleware):
             await self.init_client()
             assert self.browser_mcp_client is not None
             result = await self.browser_mcp_client.call_tool(tool_name, getattr(context.message, 'arguments', {}))
+            result = ToolResult(result.content, result.structured_content)
         else:
             result = await call_next(context)
         end_time = datetime.now()

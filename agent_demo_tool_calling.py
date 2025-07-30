@@ -120,7 +120,7 @@ class ToolCallingAgent:
                     "description": tool.description,
                     "input_schema": tool.inputSchema
                 }
-                self.tools.append(claude_tool)
+                self.tools.append(claude_tool)  # type: ignore
             
             console.print(f"[green]✅ Successfully loaded {len(self.tools)} tools[/green]")
         except Exception as e:
@@ -418,7 +418,7 @@ class ToolCallingAgent:
                             tool_name = tool_call.name
                             tool_input = tool_call.input
                             tool_use_id = tool_call.id
-                            tool_result: str = await self._execute_tool(tool_name, tool_input)
+                            tool_result = await self._execute_tool(tool_name, tool_input)
                             # Format the tool result
 
                             tool_results.append({
@@ -517,8 +517,7 @@ async def main():
         console.print("="*60)
         
         # Initial mode selection
-        # choice = input("\nPlease select mode (1-6): ").strip()
-        choice = "2"  # for test
+        choice = input("\nPlease select mode (1-6): ").strip()
 
         if choice == "1":
             message = TestScenarios.get_youtube_scenario()
