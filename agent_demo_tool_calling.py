@@ -372,7 +372,7 @@ class ToolCallingAgent:
                                     elif isinstance(delta, BetaTextDelta):  # 由BetaThinkingEvent+BetaTextEvent接管
                                         continue
                                     if isinstance(delta, BetaInputJSONDelta):
-                                        console.print(delta.partial_json, end="")
+                                        console.print(f"[dim]{delta.partial_json}[/dim]", end="")
                                         # current_text += text  # 输入的json是否应该记录？似乎不应该
                                     elif isinstance(delta, Delta):
                                         if delta.stop_reason == StopReason:
@@ -537,9 +537,31 @@ async def main():
         elif choice == "4":
             console.print(f"\n[yellow]💬 Direct Chat Mode (Tool Calling)[/yellow]")
             console.print("[cyan]You can start chatting directly. Type 'quit' to exit.[/cyan]")
+            
+            # 直接进入对话循环，不需要预设消息
+            while True:
+                user_input = input("\n👤 You: ").strip()
+                if user_input.lower() == 'quit':
+                    console.print("[green]👋 Thank you for using![/green]")
+                    break
+                if user_input:  # 只有当用户输入不为空时才处理
+                    await agent.process_message_with_tool_calling(user_input)
+            return  # 直接返回，不进入下面的连续对话模式
+            
+        elif choice == "5":
+            console.print(f"\n[yellow]🛠️ Available Tools List[/yellow]")
+            tools = await agent.mcp_client.list_tools()
+            console.print(f"[green]✅ Successfully loaded {len(tools)} tools[/green]")
+            for i, tool in enumerate(tools, 1):
+                console.print(f"{i}. {tool.name}: {tool.description}")
+            return
+            
+        elif choice == "6":
+            console.print("[green]👋 Goodbye![/green]")
+            return
 
-        # Continuous conversation loop
-        if choice in ["1", "2", "3", "4"]:
+        # Continuous conversation loop (for modes 1, 2, 3)
+        if choice in ["1", "2", "3"]:
             console.print("\n" + "="*60)
             console.print("💬 Continuous Conversation Mode")
             console.print("[cyan]Type your message to continue the conversation, or 'quit' to exit[/cyan]")
@@ -550,11 +572,13 @@ async def main():
                 if user_input.lower() == 'quit':
                     console.print("[green]👋 Thank you for using![/green]")
                     break
+                if user_input:  # 只有当用户输入不为空时才处理
+                    await agent.process_message_with_tool_calling(user_input)
+                    
     except KeyboardInterrupt:
         console.print("\n[yellow]👋 Program interrupted by user[/yellow]")
     except Exception as e:
         console.print(f"[red]❌ Program execution error: {e}[/red]")
-
 
 if __name__ == "__main__":
     asyncio.run(main()) 

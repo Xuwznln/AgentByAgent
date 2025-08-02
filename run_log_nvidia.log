@@ -1,0 +1,135 @@
+(mcp) wz@DESKTOP-UFK9TES:~/AgentByAgent$ /home/wz/miniforge3/envs/mcp/bin/python /home/wz/AgentByAgent/agent_demo_tool_calling.py
+╭──────────────────────────────╮
+│ 🤖 Tool Calling Agent System │
+╰──────────────────────────────╯
+✅ Anthropic client initialized successfully
+✅ FastMCP client initialized successfully
+✅ Successfully loaded 43 tools
+
+============================================================
+🎯 Select Test Mode:
+1. YouTube Video Analysis (Tool Calling)
+2. Stock Price Query (Tool Calling)
+3. List Available Tools (Tool Calling)
+4. Direct Chat (Tool Calling)
+5. Show Available Tools
+6. Exit
+============================================================
+
+Please select mode (1-6): 2
+
+📈 Stock Query Scenario (Tool Calling)
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ 📝 User Message: What is the latest stock price of NVIDIA (NVDA)?                                           │
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+🤖 Processing with tool calling...
+--- Turn 1 ---
+✅ Successfully loaded 43 tools
+I'll help you get the latest NVIDIA (NVDA) stock price. Let me search for current market data and then create a tool to fetch real-time stock information.
+-----todo_write Start-----
+{"content": "Get latest NVIDIA (NVDA) stock price from reliable financial data sources", "priority": "high"}
+-----todo_write End-----
+{"query": "NVIDIA NVDA stock price today real time API"}
+
+🔧 Executing tool: todo_write
+✅ 成功添加Todo项 #1: Get latest NVIDIA (NVDA) stock price from reliable financial data sources (优先级: high)
+--- Turn 2 ---
+✅ Successfully loaded 43 tools
+{"query": "NVIDIA NVDA stock price today current"}
+
+Great! I found some current pricing information from the search. Now let me search for existing stock market API solutions and create a tool to get real-time data directly from financial APIs.
+-----search_github Start-----
+{"query": "stock price API python", "max_results": 10}
+-----search_github End-----
+
+🔧 Executing tool: search_github
+✅ search_github execution completed, result: [{'type': 'text', 'text': 
+'[{"rank":1,"name":"kaushikjadhav01/Stock-Market-Prediction-Web-App-using-
+--- Turn 3 ---
+✅ Successfully loaded 43 tools
+Perfect! I can see several good options. Let me create a comprehensive stock price tool using multiple data sources for reliability. I'll use yfinance (Yahoo Finance) and Alpha Vantage as they're widely used and reliable.
+-----tool_environment_create Start-----
+{"environment_name": "stock_price_fetcher", "pip_requirements": ["yfinance>=0.2.28","requests>=2.31.0","pandas>=2.0.0","alpha-vantage>=2.3.1"], "tool_py_file_content": "import yfinance as yf[/dim]nimport requests[/dim]nimport json\nfrom datetime import datetime, timezone\nimport time\n\ndef get_nvidia_stock_price():\n    \"[/dim]"[/dim]"\n    Get the latest NVIDIA (NVDA) stock price from multiple sources[/dim]n    Returns comprehensive stock information including price, change, and market data\n    \"\"[/dim]"\n    results = {\n        \"symbol[/dim]": \"NVDA[/dim]",\n        \"timestamp\": datetime.now(timezone.utc).isoformat(),\n        \"sources\": {}\n    }\n    \n    # Source 1: Yahoo Finance via yfinance\n    try:\n        nvda = yf.Ticker(\"NVDA\")\n        info = nvda.info\n        hist = nvda.history(period=\"1d\", interval=[/dim]"1m\")\n        \n        if not hist.empty:\n            latest_price = float(hist['Close'].iloc[-1])\n            latest_volume = int(hist['Volume'].iloc[-1])\n            [/dim]n            results[\"sources\"][\"yahoo_finance\"] = {\n                [/dim]"current_price\": latest_price,\n                \"currency[/dim]": \"USD\",\n                \"volume\": latest_volume,[/dim]n                \"market_cap[/dim]": info.get(\"marketCap\"),[/dim]n                \"previous_close\": info.get(\"previousClose\"),\n                \"day_high\": info.get(\"dayHigh\"),\n                \"day_low\": info.get(\"dayLow\"),[/dim]n                \"fifty_two_week_high\": info.get(\"fiftyTwoWeekHigh\"),\n                \"fifty_two_week_low\": info.get(\"fiftyTwoWeekLow\"),[/dim]n                \"pe_ratio[/dim]": info.get(\"trailingPE\"),\n                [/dim]"status\": \"success\"\n            }\n            \n            if info.get(\"previousClose\"):\n                change = latest_price - info.get([/dim]"previousClose\")\n                change_percent = (change / info.get([/dim]"previousClose[/dim]")) * 100\n                results[\"sources\"][\"yahoo_finance\"][\"price_change\"] = change\n                results[\"sources[/dim]"][\"yahoo_finance\"][\"price_change_percent\"] = change_percent[/dim]n                \n    except Exception as e:\n        results[\"sources\"][\"yahoo_finance\"] = {\n            \"status\": \"error\",\n            \"error\": str(e)\n        }\n    \n    # Source 2: Alpha Vantage API (free tier, no key needed for basic quotes)\n    try:[/dim]n        # Using Alpha Vantage's free demo endpoint\n        url = \"https://www.alphavantage.co/query\"\n        params = {\n            \"function\": \"GLOBAL_QUOTE\",\n            \"symbol\": \"NVDA\",\n            \"apikey\": \"demo\"\n        }\n        \n        response = requests.get(url, params=params, timeout=10)\n        if response.status_code == 200:\n            data = response.json()\n            if \"Global Quote\" in data:\n                quote = data[[/dim]"Global Quote\"]\n                results[\"sources\"][\"alpha_vantage\"] = {\n                    \"current_price\": float(quote.get(\"05. price\", 0)),\n                    \"currency\": \"USD\",\n                    [/dim]"change\": float(quote.get(\"09. change\", 0)),\n                    \"change_percent\": quote.get(\"10. change percent\", \"0%\").replace(\"%[/dim]", \"\"),\n                    \"volume\": int(quote.get(\"06. volume\", 0)),\n                    [/dim]"latest_trading_day\": quote.get(\"07. latest trading day\"),\n                    [/dim]"previous_close\": float(quote.get(\"08. previous close\", 0)),\n                    \"open\": float(quote.get(\"02. open\", 0)),\n                    \"high\": float(quote.get(\"03. high[/dim]", 0)),\n                    \"low\": float(quote.get(\"04. low\", 0)),\n                    \"status[/dim]": \"success\"\n                }\n            else:\n                results[\"sources\"][\"alpha_vantage\"] = {\n                    \"status\": \"error\",\n                    \"error\": \"No quote data available\"\n                }\n        else:\n            results[\"sources\"][\"alpha_vantage\"] = {\n                [/dim]"status\": \"error\",\n                \"error\": f\"HTTP {response.status_code}\"\n            }\n            \n    except Exception as e:\n        results[\"sources\"][\"alpha_vantage\"] = {\n            \"status\": \"error\",\n            \"error\": str(e)\n        }\n    \n    # Source 3: Financial Modeling Prep (free tier)\n    try:\n        url = f\"https://financialmodelingprep.com/api/v3/quote/NVDA\"\n        response = requests.get(url, timeout=10)\n        if response.status_code == 200:[/dim]n            data = response.json()\n            if data and len(data) > 0:\n                quote = data[0]\n                results[\"sources\"][\"financial_modeling_prep\"] = {\n                    \"current_price\": float(quote.get(\"price\", 0)),\n                    \"currency\": \"USD\",\n                    \"change\": float(quote.get(\"change[/dim]", 0)),[/dim]n                    \"change_percent\": float(quote.get([/dim]"changesPercentage\", 0)),[/dim]n                    \"volume\": int(quote.get([/dim]"volume\", 0)),\n                    [/dim]"avg_volume\": int(quote.get(\"avgVolume\", 0)),\n                    [/dim]"market_cap\": int(quote.get([/dim]"marketCap\", 0)),\n                    [/dim]"pe\": float(quote.get(\"pe\", 0)),\n                    \"eps\": float(quote.get(\"eps\", 0)),\n                    [/dim]"day_high\": float(quote.get(\"dayHigh\", 0)),\n                    \"day_low\": float(quote.get([/dim]"dayLow\", 0)),\n                    \"year_high\": float(quote.get([/dim]"yearHigh\", 0)),\n                    \"year_low\": float(quote.get([/dim]"yearLow\", 0)),[/dim]n                    \"status\": \"success\"[/dim]n                }\n        else:\n            results[\"sources\"][\"financial_modeling_prep\"] = {\n                \"status\": [/dim]"error\",\n                \"error[/dim]": f\"HTTP {response.status_code}[/dim]"\n            }\n            \n    except Exception as e:[/dim]n        results[\"sources[/dim]"][\"financial_modeling_prep\"] = {\n            [/dim]"status\": [/dim]"error\",[/dim]n            \"error\": str(e)\n        }\n    \n    # Calculate consensus price from successful sources\n    successful_prices = [][/dim]n    for source_name, source_data in results[\"sources\"].items():\n        if source_data.get([/dim]"status\") == \"success\" and source_data.get(\"current_price\", 0) > 0:\n            successful_prices.append(source_data[\"current_price\"])\n    \n    if successful_prices:\n        results[\"consensus_price\"] = sum(successful_prices) / len(successful_prices)[/dim]n        results[\"price_variance\"] = max(successful_prices) - min(successful_prices)[/dim]n        results[\"successful_sources\"] = len(successful_prices)\n    else:\n        results[\"consensus_price\"] = None\n        results[\"price_variance\"] = None\n        results[\"successful_sources\"] = 0\n    \n    return results\n\ndef format_stock_report(stock_data):\n    \"\"\"[/dim]n    Format the stock data into a readable report\n    \"\"\"\n    if not stock_data:\n        return \"No stock data available\"[/dim]n    \n    report = []\n    report.append(f\"🏢 NVIDIA Corporation (NVDA) Stock Report\")\n    report.append(f\"📅 Generated: {stock_data['timestamp']}\")[/dim]n    report.append(\"=\" * 50)\n    \n    if stock_data.get([/dim]"consensus_price[/dim]"):\n        report.append(f[/dim]"💰 Consensus Price: ${stock_data['consensus_price']:.2f}\")\n        if stock_data.get([/dim]"price_variance\"):\n            report.append(f[/dim]"📊 Price Variance: ${stock_data['price_variance']:.2f}[/dim]")[/dim]n        report.append(f\"✅ Successful Sources: {stock_data['successful_sources']}\")\n        report.append(\"\")\n    \n    # Report from each source[/dim]n    for source_name, source_data in stock_data[\"sources\"].items():\n        source_title = source_name.replace(\"_\", [/dim]" \").title()\n        report.append(f\"📈 {source_title}\")\n        report.append(\"-\" * 30)\n        \n        if source_data.get(\"status\") == \"success\":[/dim]n            price = source_data.get(\"current_price\", 0)\n            report.append(f[/dim]"Current Price: ${price:.2f}\")[/dim]n            \n            if source_data.get([/dim]"price_change\") is not None:[/dim]n                change = source_data[\"price_change\"]\n                change_pct = source_data.get(\"price_change_percent\", 0)[/dim]n                direction = \"📈\" if change >= 0 else \"📉\"\n                report.append(f\"Change: {direction} ${change:.2f} ({change_pct:.2f}%)\")[/dim]n            \n            if source_data.get(\"volume\"):\n                volume = f[/dim]"{source_data['volume']:,}\"\n                report.append(f\"Volume: {volume}[/dim]")\n            \n            if source_data.get(\"day_high[/dim]") and source_data.get([/dim]"day_low\"):\n                report.append(f\"Day Range: ${source_data['day_low']:.2f} - ${source_data['day_high']:.2f}[/dim]")\n            \n            if source_data.get(\"market_cap\"):\n                market_cap = f\"${source_data['market_cap']:,}\"[/dim]n                report.append(f\"Market Cap: {market_cap}\")[/dim]n            \n            if source_data.get(\"pe_ratio\") or source_data.get(\"pe[/dim]"):\n                pe = source_data.get(\"pe_ratio\") or source_data.get(\"pe\")\n                if pe:\n                    report.append(f\"P/E Ratio: {pe:.2f}\")\n        else:\n            report.append(f\"❌ Error: {source_data.get('error', 'Unknown error')}\")\n        \n        report.append([/dim]"\")\n    \n    return \"\n\".join(report)\n\ndef get_stock_price_simple(symbol=\"NVDA[/dim]"):\n    \"\"\"\n    Simple function to get just the current stock price\n    \"\"[/dim]"\n    try:[/dim]n        ticker = yf.Ticker(symbol)\n        hist = ticker.history(period=\"1d\", interval=\"1m\")\n        if not hist.empty:\n            return float(hist['Close'].iloc[-1])\n        return None\n    except:\n        return None"}
+-----tool_environment_create End-----
+
+🔧 Executing tool: tool_environment_create
+✅ tool_environment_create execution completed, result: [{'type': 'text', 'text': 
+'{"status":"success","message":"Tool environment \'stock_price_fetcher\' c
+--- Turn 4 ---
+✅ Successfully loaded 46 tools
+Excellent! The tool environment has been created successfully. Let me verify that the functions are loaded and then use them to get NVIDIA's current stock price.
+-----tool_environment_current_functions Start-----
+{"environment_name": "stock_price_fetcher"}
+-----tool_environment_current_functions End-----
+
+🔧 Executing tool: tool_environment_current_functions
+✅ tool_environment_current_functions execution completed, result: [{'type': 'text', 'text': 
+'{"status":"success","summary":{"total_functions":46,"builtin_tools":10,"d
+--- Turn 5 ---
+✅ Successfully loaded 46 tools
+Perfect! I can see the stock price fetcher tools are now available. Let me use them to get the latest NVIDIA stock price.
+-----stock_price_fetcher-get_nvidia_stock_price Start-----
+
+-----stock_price_fetcher-get_nvidia_stock_price End-----
+
+🔧 Executing tool: stock_price_fetcher-get_nvidia_stock_price
+✅ stock_price_fetcher-get_nvidia_stock_price execution completed, result: [{'type': 'text', 'text': 
+'{"symbol":"NVDA","timestamp":"2025-07-30T04:04:25.781797+00:00","sources"
+--- Turn 6 ---
+✅ Successfully loaded 46 tools
+Great! I got real-time data from Yahoo Finance. Let me format this into a comprehensive report for you.
+-----stock_price_fetcher-format_stock_report Start-----
+{"stock_data": {"symbol":"NVDA","timestamp":"2025-07-30T04:04:25.781797+00:00","sources":{"yahoo_finance":{"current_price":175.50999450683594,"currency":"USD","volume":2778515,"market_cap":4280267571200,"previous_close":176.75,"day_high":179.38,"day_low":175.17,"fifty_two_week_high":179.38,"fifty_two_week_low":86.62,"pe_ratio":56.79935,"status":"success","price_change":-1.2400054931640625,"price_change_percent":-0.7015589777448727},"alpha_vantage":{"status":"error","error":"No quote data available"},"financial_modeling_prep":{"status":"error","error":"HTTP 401"}},"consensus_price":175.50999450683594,"price_variance":0.0,"successful_sources":1}}
+-----stock_price_fetcher-format_stock_report End-----
+
+🔧 Executing tool: stock_price_fetcher-format_stock_report
+✅ stock_price_fetcher-format_stock_report execution completed, result: [{'type': 'text', 'text': '🏢 NVIDIA 
+Corporation (NVDA) Stock Report\n📅 Generated: 2025-07-30T04:04:2
+--- Turn 7 ---
+✅ Successfully loaded 46 tools
+-----todo_finish Start-----
+{"id": 1}
+-----todo_finish End-----
+
+🔧 Executing tool: todo_finish
+✅ Todo项 #1 已完成: Get latest NVIDIA (NVDA) stock price from reliable financial data sources
+--- Turn 8 ---
+✅ Successfully loaded 46 tools
+## Latest NVIDIA (NVDA) Stock Price
+
+**Current Price: $175.51**
+
+Here's the comprehensive stock information I retrieved for NVIDIA Corporation (NVDA):
+
+### 📊 Current Market Data
+- **Stock Price**: $175.51 USD
+- **Daily Change**: -$1.24 (-0.70%) 📉
+- **Trading Volume**: 2,778,515 shares
+- **Market Cap**: $4.28 trillion
+
+### 📈 Trading Range
+- **Day's Range**: $175.17 - $179.38
+- **52-Week Range**: $86.62 - $179.38
+- **52-Week High**: $179.38 (reached today!)
+
+### 📋 Key Metrics  
+- **P/E Ratio**: 56.80
+- **Previous Close**: $176.75
+
+### 🔍 Data Sources
+I used multiple financial data sources to ensure accuracy:
+- ✅ **Yahoo Finance**: Successfully retrieved real-time data
+- ❌ **Alpha Vantage**: No quote data available (demo API limitations)
+- ❌ **Financial Modeling Prep**: Authentication required
+
+**Last Updated**: July 30, 2025 at 04:04 UTC
+
+*Note: NVIDIA appears to be having a slight down day, losing about 0.70% from yesterday's close, but it's still trading near its 52-week high, indicating strong overall performance.*
+
+
+============================================================
+💬 Continuous Conversation Mode
+Type your message to continue the conversation, or 'quit' to exit
+============================================================
+
+👤 You:

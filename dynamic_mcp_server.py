@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-# 问题：1.多工具调用容易卡死，网络问题？httpx.RemoteProtocolError: peer closed connection without sending complete message body (incomplete chunked read)
-# 问题：2.自动停止（新建文件55,56）
-# 问题：3.工具调用结果输出？
-# session_id会忘记，一般是怎么处理的
 """
 Dynamic MCP Server - Dynamic tools folder monitoring MCP server
 
