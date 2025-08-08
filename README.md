@@ -10,7 +10,7 @@
 
 ### 🚀 项目简介
 
-AgentByAgent 是一个基于 [Model Control Protocol (MCP)](https://modelcontextprotocol.io/) 的自进化动态工具代理系统。它允许 AI Agent 根据任务需求自主创建、集成和管理工具，实现真正的"最小化预定义，最大化自进化"。
+AgentByAgent 是一个基于 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 的自进化动态工具代理系统。它允许 AI Agent 根据任务需求自主创建、集成和管理工具，实现真正的"最小化预定义，最大化自进化"。
 
 ### ✨ 核心特性
 
