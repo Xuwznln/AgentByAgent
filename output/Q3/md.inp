@@ -1,0 +1,6 @@
+$md
+   temp=300.0
+   time=10.0
+   step=1.0
+   shake=2
+$end

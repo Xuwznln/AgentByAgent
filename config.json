@@ -1,0 +1,12 @@
+{
+    "openai": {
+        "api_key": "",
+        "base_url": "",
+        "model": ""
+    },
+    "agent": {
+        "api_key": "",
+        "base_url": "",
+        "model": ""
+    }
+}
